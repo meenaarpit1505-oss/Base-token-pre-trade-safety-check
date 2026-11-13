@@ -1,4 +1,10 @@
-# HANDOFF — base-safety-v2 (v2.1.0)
+# HANDOFF — base-safety-v2 (v2.2.0)
+
+## New in 2.2.0
+- Optional payment gate (`lib/billing.js`): `BILLING_MODE` open (default) / api_key (Supabase `deduct_api_key_balance`) / x402 (v2, USDC on Base, facilitator verify + settle). Fail closed on missing config. Unit-tested with a fake facilitator and RPC.
+- Uniswap V4 hooked-pool discovery from PoolManager `Initialize` logs (env-gated, bounded, cached).
+- Node 22 (`engines.node >=22`; Railway `RAILPACK_NODE_VERSION=22`).
+- The V3/Slipstream LP-lock floor lives in `origin-api` (`src/services/lpLocks.ts`); this engine has no LP-lock field.
 
 ## Done in this package
 - Uniswap V4 (Base): hookless pool discovery at 100/1, 500/10, 3000/60, 10000/200 via off-chain PoolId + StateView; optional `UNISWAP_V4_POOL_KEYS` for hooked pools (flagged `V4_HOOKED_POOL`, not modeled). V4 Swap/ModifyLiquidity logs feed the mempool forensics and JIT models.
@@ -26,6 +32,6 @@ Note: a Slipstream factory `0x5e7BB104d84c5CB9F079E55B2582Eb12b2062F41` was ment
 - V3/Slipstream NFT LP lock reporting (`-1`; GoPlus `lp_holders` is not per-pool).
 - Team Finance Base LP locker address (only from an official source).
 - Durable holder cache in Origin.
-- x402 pay-to / facilitator (`X402_PAY_TO`, `X402_FACILITATOR_URL`, `X402_ACCEPT_STUB=false`): needs a real address from the owner.
+- x402 pay-to / facilitator values (`X402_PAY_TO`, `X402_FACILITATOR_URL`, `X402_ACCEPT_STUB=false`): the gate exists in both services; the owner must supply a real receiving address and facilitator.
 - Solana and `POST /v1/token-safety/batch`.
-- V4 hooked-pool discovery needs an `Initialize`-event index (subgraph or archive logs); not possible within the per-request budget.
+- V4 hooked pools older than the log lookback still need a full `Initialize` index (subgraph) or `UNISWAP_V4_POOL_KEYS`.

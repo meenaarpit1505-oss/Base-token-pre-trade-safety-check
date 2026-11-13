@@ -21,7 +21,25 @@
     "protocol_version": "2025-06-18"
   },
   "auth": {
-    "type": "none"
+    "type": "none",
+    "note": "Depends on the deployment's BILLING_MODE. open (default): no auth. api_key: send X-Api-Key (prepaid; each paid call debits price_usd). x402: unpaid calls get HTTP 402 with a PAYMENT-REQUIRED header (x402 v2, scheme exact, USDC on Base eip155:8453, EIP-3009); retry with PAYMENT-SIGNATURE. Responses carry X-Billing-Mode and X-Price-Usd when billing is on.",
+    "modes": ["open", "api_key", "x402"],
+    "api_key_header": "X-Api-Key",
+    "x402": {
+      "version": 2,
+      "scheme": "exact",
+      "network": "eip155:8453",
+      "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "request_header": "PAYMENT-SIGNATURE",
+      "challenge_header": "PAYMENT-REQUIRED",
+      "receipt_header": "PAYMENT-RESPONSE",
+      "pay_to": "Read from the 402 response (accepts[0].payTo); configured per deployment via X402_PAY_TO."
+    }
+  },
+  "pricing": {
+    "price_usd": 0.01,
+    "unit": "per paid call (POST/GET /api/analyze, MCP tools/call); invalid token_address, initialize, tools/list are free",
+    "note": "Default PRICE_USD; the live price is in X-Price-Usd and the 402 body. Free when BILLING_MODE=open."
   },
   "chain": {
     "id": 8453,
@@ -513,7 +531,7 @@
                       },
                       "coverage": {
                         "type": "object",
-                        "description": "Venues and quote assets scanned; v4_discovery = hookless_standard_tiers_only | hookless_standard_tiers+configured_keys | disabled."
+                        "description": "Venues and quote assets scanned; v4_discovery = hookless_standard_tiers_only | hookless_standard_tiers[+configured_keys][+initialize_logs] | disabled; v4_log_discovery = {status: disabled|ok|partial|budget_exceeded|error, pools_found, new_pools_checked, from_block, to_block, coverage}."
                       }
                     },
                     "additionalProperties": true

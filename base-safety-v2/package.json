@@ -1,6 +1,6 @@
 {
   "name": "base-token-safety-v2",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "description": "Base (chain 8453) pre-trade token safety check for autonomous trading agents: mempool front-running surface, JIT liquidity, cross-pair cascade risk.",
@@ -8,12 +8,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "check": "node --check lib/clMath.js && node --check lib/safetyEngine.js && node --check lib/cacheLayer.js && node --check app/api/analyze/route.js && node --check app/api/mcp/route.js && node scripts/validate-manifest.mjs",
+    "check": "node --check lib/clMath.js && node --check lib/safetyEngine.js && node --check lib/cacheLayer.js && node --check lib/billing.js && node --check app/api/analyze/route.js && node --check app/api/mcp/route.js && node scripts/validate-manifest.mjs",
     "smoke": "node scripts/smoke.mjs",
     "test": "node scripts/unit.mjs"
   },
   "engines": {
-    "node": ">=18.18"
+    "node": ">=22"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

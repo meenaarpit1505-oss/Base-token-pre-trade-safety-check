@@ -157,6 +157,7 @@ async function inspect(address: Address, started: number): Promise<TokenSafetyRe
     isPaused: intel.isPaused,
     hasTaxSetter: intel.hasTaxSetter,
     lpLockedPct: pool ? pool.lpLockedPct : null,
+    lpLockFloor: pool ? pool.lpLockFloor : false,
     liquidityUsd: pool ? pool.liquidityUsd : market.pools.length === 0 ? 0 : null,
     noPool: !pool,
     holdersTop10Pct: holderPct,
