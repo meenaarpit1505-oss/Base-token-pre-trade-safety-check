@@ -159,7 +159,7 @@ Docker: `docker build -t base-token-safety .` then `docker run --rm -p 8787:8787
 ## Remaining TODOs
 
 1. Point `X402_PAY_TO` and `X402_FACILITATOR_URL` at a real Base USDC recipient and a mainnet facilitator, set `X402_ACCEPT_STUB=false`, and run one signed $0.01 payment. The code path is ready. This repo must not invent a pay-to key.
-2. V3 / Slipstream NFT LP locks are still `-1`. Count them only from an index that attributes locked liquidity to the chosen pool. GoPlus `lp_holders` was inspected and is not per-pool.
+2. V3 / Slipstream NFT LP locks: v2.2 adds a per-pool lower bound from burned (`0x…dEaD`) position NFTs plus optional `LP_NFT_LOCKERS` (`src/services/lpLocks.ts`). Still missing: verified CL locker contracts (UNCX V3, Clanker lockers) — add their addresses to `LP_NFT_LOCKERS` only from an official source.
 3. Add Team Finance's Base LP locker only after the address is verified from an official source. Extend `LP_LOCKERS` in `src/domain/addresses.ts`. Do not guess.
 4. Exercise Postgres against a real `DATABASE_URL` and Upstash against real REST credentials. The Redis wire client is covered by an in-process server test. The SQL is `INSERT ... ON CONFLICT` into `token_safety_usage`.
 5. Find a current Base token whose owner is renounced and whose `mint` is public, and confirm `ownerCanMint: true` with the public-mint reason. Re-check USDC afterward. USDC must stay `ownerCanMint: true` because Circle has not renounced.

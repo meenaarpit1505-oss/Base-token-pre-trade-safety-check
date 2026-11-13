@@ -30,7 +30,7 @@ import {
 import { base } from 'viem/chains';
 import * as cl from './clMath.js';
 
-export const ENGINE_VERSION = '2.1.0';
+export const ENGINE_VERSION = '2.2.0';
 export const TOOL_NAME = 'analyze_base_token_safety';
 export const CHAIN_ID = 8453;
 export const CACHE_TTL_SECONDS = 300;
@@ -162,6 +162,27 @@ export function parseV4PoolKeys(raw) {
   return out.slice(0, 20);
 }
 
+const NO_LOGS_HOSTS = ['mainnet.base.org']; // rejects / rate-limits eth_getLogs
+const logsCapable = (u) => {
+  try {
+    return !NO_LOGS_HOSTS.includes(new URL(u).hostname);
+  } catch {
+    return false;
+  }
+};
+/**
+ * UNISWAP_V4_LOG_DISCOVERY: auto (default) => on only when an operator-supplied endpoint can serve logs
+ * (BASE_LOGS_RPC_URL, or a BASE_RPC_URL that is not mainnet.base.org); on => also try BASE_RPC_FALLBACK_URLS
+ * (e.g. publicnode, 50k-block ranges); off => disabled. Returns the URL list to use, or null when disabled.
+ */
+export function v4LogDiscoveryUrls(mode, primary, logsUrls = [], fallbacks = []) {
+  const m = String(mode ?? 'auto').toLowerCase();
+  if (m === 'off' || m === 'false' || m === '0') return null;
+  const explicit = dedupe([...logsUrls, ...(primary && primary !== 'https://mainnet.base.org' ? [primary] : [])]).filter(logsCapable);
+  const urls = m === 'on' || m === 'true' || m === '1' ? dedupe([...explicit, ...fallbacks.filter(logsCapable)]) : explicit;
+  return urls.length ? urls : null;
+}
+
 export function loadConfig(overrides = {}) {
   const primary = overrides.rpcUrl || env('BASE_RPC_URL', 'https://mainnet.base.org');
   const fallbacks = envUrls('BASE_RPC_FALLBACK_URLS', 'https://base-rpc.publicnode.com');
@@ -192,6 +213,13 @@ export function loadConfig(overrides = {}) {
     enableV4: overrides.enableV4 ?? envBool('ENABLE_UNISWAP_V4', true),
     enableExtraQuotes: overrides.enableExtraQuotes ?? envBool('ENABLE_EXTRA_QUOTES', true),
     v4ExtraKeys: parseV4PoolKeys(env('UNISWAP_V4_POOL_KEYS', '')),
+    // Hooked / non-standard V4 pools via PoolManager Initialize logs (bounded, env-gated; never via mainnet.base.org).
+    v4LogDiscovery: v4LogDiscoveryUrls(env('UNISWAP_V4_LOG_DISCOVERY', 'auto'), primary, logsUrls, fallbacks),
+    v4DiscoveryLookback: envNum('V4_DISCOVERY_LOOKBACK_BLOCKS', 500000, 1000, 50000000),
+    v4DiscoveryChunk: envNum('V4_DISCOVERY_CHUNK_BLOCKS', 50000, 1000, 10000000), // publicnode caps ranges at 50k
+    v4DiscoveryBudgetMs: envNum('V4_DISCOVERY_BUDGET_MS', 2500, 200, 20000),
+    v4DiscoveryCacheMs: envNum('V4_DISCOVERY_CACHE_SECONDS', 1800, 0, 86400) * 1000,
+    v4DiscoveryMaxPools: envNum('V4_DISCOVERY_MAX_POOLS', 12, 1, 50),
     mevBots: new Set(envList('MEV_BOT_ADDRESSES')),
     routers: new Set([...DEFAULT_ROUTERS.map((a) => a.toLowerCase()), ...envList('KNOWN_ROUTER_ADDRESSES')]),
     weights: {
@@ -262,6 +290,7 @@ const EV = {
   // Uniswap V4 PoolManager (v4-core IPoolManager). Swap amounts are the SWAPPER's deltas (sign opposite to V3).
   V4_SWAP: parseAbiItem('event Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)'),
   V4_MODIFY: parseAbiItem('event ModifyLiquidity(bytes32 indexed id, address indexed sender, int24 tickLower, int24 tickUpper, int256 liquidityDelta, bytes32 salt)'),
+  V4_INITIALIZE: parseAbiItem('event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)'),
 };
 const TOPIC = Object.fromEntries(Object.entries(EV).map(([k, v]) => [k, toEventSelector(v)]));
 const TOPIC_TO_EVENT = new Map(Object.entries(EV).map(([k, v]) => [TOPIC[k], { key: k, item: v }]));
@@ -428,6 +457,80 @@ function v4Candidates(token, cfg) {
     if (quote) push(k, quote, k.hooks !== zeroAddress);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Uniswap V4 Initialize-log discovery (hooked + non-standard-tier pools). Bounded lookback, chunked ranges,
+// time budget, per-token memory cache. Only uses logs-capable endpoints (see v4LogDiscoveryUrls).
+// ---------------------------------------------------------------------------
+const v4DiscoveryCache = new Map(); // token -> { at, promise }
+const topicAddr = (a) => '0x' + a.toLowerCase().slice(2).padStart(64, '0');
+
+/** Decode Initialize logs into PoolKeys whose other currency is a supported quote asset. */
+export function decodeV4InitializeLogs(logs, token) {
+  const out = [];
+  const seen = new Set();
+  for (const log of logs ?? []) {
+    try {
+      const { args } = decodeEventLog({ abi: [EV.V4_INITIALIZE], data: log.data, topics: log.topics });
+      const key = { currency0: lc(args.currency0), currency1: lc(args.currency1), fee: Number(args.fee), tickSpacing: Number(args.tickSpacing), hooks: lc(args.hooks) };
+      const other = key.currency0 === token ? key.currency1 : key.currency1 === token ? key.currency0 : null;
+      if (!other || !ASSET_BY_ADDR.has(other)) continue;
+      const id = lc(args.id);
+      if (seen.has(id) || v4PoolId(key) !== id) continue; // id must match the key (guards against bogus logs)
+      seen.add(id);
+      out.push({ ...key, block: log.blockNumber != null ? Number(BigInt(log.blockNumber)) : null });
+    } catch {
+      /* not an Initialize log */
+    }
+  }
+  return out;
+}
+
+async function scanV4Initialize(token, cfg, client) {
+  const head = await client.getBlockNumber({ cacheTime: 1000 });
+  const toBlock = head - BigInt(cfg.headLagBlocks);
+  const span = BigInt(cfg.v4DiscoveryLookback);
+  const fromBlock = toBlock > span ? toBlock - span + 1n : 0n;
+  const t = topicAddr(token);
+  const jobs = [
+    [TOPIC.V4_INITIALIZE, null, t], // token is currency0
+    [TOPIC.V4_INITIALIZE, null, null, t], // token is currency1
+  ];
+  const res = await Promise.all(
+    jobs.map((topics) => getLogsChunked(client, { address: ADDRESSES.UNISWAP_V4_POOL_MANAGER, topics, fromBlock, toBlock, chunk: cfg.v4DiscoveryChunk, concurrency: cfg.logConcurrency })),
+  );
+  const keys = decodeV4InitializeLogs(res.flatMap((r) => r.logs), token).sort((a, b) => (b.block ?? 0) - (a.block ?? 0));
+  return {
+    keys: keys.slice(0, cfg.v4DiscoveryMaxPools),
+    coverage: Math.min(...res.map((r) => r.coverage)),
+    fromBlock: Number(fromBlock),
+    toBlock: Number(toBlock),
+    failures: res.flatMap((r) => r.failures).slice(0, 3),
+  };
+}
+
+/** Returns { status, keys, ... } within cfg.v4DiscoveryBudgetMs; a slow scan keeps running and warms the cache. */
+async function discoverV4Keys(token, cfg) {
+  if (!cfg.enableV4 || !cfg.v4LogDiscovery) return { status: 'disabled', keys: [] };
+  const now = Date.now();
+  let entry = v4DiscoveryCache.get(token);
+  if (!entry || now - entry.at > cfg.v4DiscoveryCacheMs) {
+    const client = getClient(cfg.v4LogDiscovery, cfg.rpcTimeoutMs + 2000, { jsonRpcBatch: false });
+    entry = { at: now, promise: scanV4Initialize(token, cfg, client).then((r) => ({ status: r.coverage >= 1 ? 'ok' : 'partial', ...r }), (e) => ({ status: 'error', keys: [], error: String(e?.shortMessage || e?.message || e).slice(0, 160) })) };
+    v4DiscoveryCache.set(token, entry);
+    if (v4DiscoveryCache.size > 2000) v4DiscoveryCache.delete(v4DiscoveryCache.keys().next().value);
+    entry.promise.then((r) => {
+      if (r.status === 'error') v4DiscoveryCache.delete(token); // retry next call
+    });
+  }
+  let timer;
+  const budget = new Promise((resolve) => (timer = setTimeout(() => resolve({ status: 'budget_exceeded', keys: [] }), cfg.v4DiscoveryBudgetMs)));
+  try {
+    return await Promise.race([entry.promise, budget]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function stateCallsFor(p, baseAddr) {
@@ -598,6 +701,7 @@ async function buildContext(token, cfg, sig) {
     }
   }
   const v4 = v4Candidates(token, cfg);
+  const v4DiscoveryPromise = discoverV4Keys(token, cfg); // runs alongside round 1
   const v4Calls = v4.flatMap((p) => [
     { address: ADDRESSES.UNISWAP_V4_STATE_VIEW, abi: stateViewAbi, functionName: 'getSlot0', args: [p.poolId] },
     { address: ADDRESSES.UNISWAP_V4_STATE_VIEW, abi: stateViewAbi, functionName: 'getLiquidity', args: [p.poolId] },
@@ -651,6 +755,33 @@ async function buildContext(token, cfg, sig) {
     p.v4Liquidity = val(r1[off + i * 2 + 1]);
   });
   const v4Live = v4.filter((p) => p.v4Slot0 && p.v4Slot0[0] > 0n && p.v4Liquidity != null && p.v4Liquidity > 0n);
+
+  // Round 1b: V4 pools found in Initialize logs that key guessing did not cover (hooked / custom tiers).
+  const v4Disc = await v4DiscoveryPromise;
+  const known = new Set(v4.map((p) => p.poolId));
+  const v4Found = [];
+  for (const k of v4Disc.keys ?? []) {
+    const id = v4PoolId(k);
+    if (known.has(id)) continue;
+    known.add(id);
+    const other = k.currency0 === token ? k.currency1 : k.currency0;
+    v4Found.push({ address: id, poolId: id, dex: 'uniswap_v4', kind: 'v4', quote: ASSET_BY_ADDR.get(other), fee: k.fee, tick_spacing: k.tickSpacing, hooks: k.hooks, hooked: k.hooks !== zeroAddress, discovered_via: 'initialize_log' });
+  }
+  if (v4Found.length) {
+    const r1b = await client.multicall({
+      contracts: v4Found.flatMap((p) => [
+        { address: ADDRESSES.UNISWAP_V4_STATE_VIEW, abi: stateViewAbi, functionName: 'getSlot0', args: [p.poolId] },
+        { address: ADDRESSES.UNISWAP_V4_STATE_VIEW, abi: stateViewAbi, functionName: 'getLiquidity', args: [p.poolId] },
+      ]),
+      allowFailure: true,
+    });
+    v4Found.forEach((p, i) => {
+      p.v4Slot0 = val(r1b[i * 2]);
+      p.v4Liquidity = val(r1b[i * 2 + 1]);
+      if (p.v4Slot0 && p.v4Slot0[0] > 0n && p.v4Liquidity != null && p.v4Liquidity > 0n) v4Live.push(p);
+    });
+  }
+  if (sig?.aborted) throw sig.reason;
 
   // Round 2: pool state for discovered token pools, intermediate reference pools, ETH/USD reference pools.
   const stateCalls = [];
@@ -816,9 +947,17 @@ async function buildContext(token, cfg, sig) {
     coverage: {
       venues: ['uniswap_v2', 'uniswap_v3', ...(cfg.enableV4 ? ['uniswap_v4'] : []), 'aerodrome_volatile', 'aerodrome_stable', 'aerodrome_slipstream'],
       quote_assets: dedupe([...quotes.map((q) => q.symbol), ...(cfg.enableV4 && token !== ASSET.WETH.address ? ['ETH'] : [])]),
-      v4_discovery: cfg.enableV4 ? (cfg.v4ExtraKeys.length ? 'hookless_standard_tiers+configured_keys' : 'hookless_standard_tiers_only') : 'disabled',
-      v4_candidates_checked: v4.length,
+      v4_discovery: cfg.enableV4
+        ? ['hookless_standard_tiers', ...(cfg.v4ExtraKeys.length ? ['configured_keys'] : []), ...(cfg.v4LogDiscovery ? ['initialize_logs'] : [])].join('+').replace(/^hookless_standard_tiers$/, 'hookless_standard_tiers_only')
+        : 'disabled',
+      v4_candidates_checked: v4.length + v4Found.length,
       v4_pools_live: v4Live.length,
+      v4_log_discovery: {
+        status: v4Disc.status,
+        pools_found: v4Disc.keys?.length ?? 0,
+        new_pools_checked: v4Found.length,
+        ...(v4Disc.fromBlock != null ? { from_block: v4Disc.fromBlock, to_block: v4Disc.toBlock, coverage: round(v4Disc.coverage, 3) } : {}),
+      },
     },
     poolByAddr: new Map(pools.map((p) => [p.address, p])),
     getLogs: (s) => (logsPromise ??= fetchPoolLogs(ctx, s)),

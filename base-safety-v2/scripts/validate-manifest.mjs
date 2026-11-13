@@ -28,7 +28,7 @@ for (const [input, expected] of cases) {
 const validateOutput = ajv.compile(tool.outputSchema);
 const model = (data_source) => ({ score: 10, status: 'SAFE', confidence: 0.6, data_available: true, data_source, latency_ms: 5, metrics: {}, signals: [] });
 const sample = (overrides = {}) => ({
-  tool: 'analyze_base_token_safety', version: '2.1.0', chain_id: 8453, token_address: '0x4ed4e862860bed51a9570b96d89af5e1b0efefed',
+  tool: 'analyze_base_token_safety', version: '2.2.0', chain_id: 8453, token_address: '0x4ed4e862860bed51a9570b96d89af5e1b0efefed',
   status: 'SAFE', risk_score: 10, confidence: 0.6,
   risk_matrix: { mempool_front_running: model('recent_blocks_fallback'), jit_liquidity_vampire: model('onchain_logs'), cross_pair_cascade: model('onchain_state') },
   recommendation: { action: 'PROCEED', max_slippage_bps: 50, split_order: false, use_private_order_flow: false, avoid_pools: ['0x' + 'ab'.repeat(32)], reasons: ['SAFE: no material signals across the three models.'] },
