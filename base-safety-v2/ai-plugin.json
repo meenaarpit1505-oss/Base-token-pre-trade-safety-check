@@ -1,0 +1,810 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Base Token Pre-Trade Safety Check",
+  "name_for_model": "base_token_safety",
+  "description_for_human": "Pre-trade safety check for any ERC-20 on Base: front-running exposure, JIT liquidity, and cross-pair cascade risk in one call.",
+  "description_for_model": "Call analyze_base_token_safety BEFORE swapping, buying, or routing any token on Base (chain id 8453). Input: token_address only. Returns status SAFE | WARN | DANGER, risk_score 0-100 and a risk_matrix with three models: Mempool Front-Running Attack Surface, JIT (Just-In-Time) Liquidity Vampire Risk, and Cross-Pair Liquidity Cascade Risk. Rules: DANGER => do not trade. WARN => trade only with recommendation.max_slippage_bps and split orders. SAFE => proceed. recommendation.reasons lists the signals behind the status. Results are cached for up to 300 s (see cached, cache_age_seconds); identical calls inside that window are near-instant. Read-only; never signs or sends transactions.",
+  "contact": {
+    "repository": "https://github.com/meenaarpit1505-oss/Base-token-pre-trade-safety-check"
+  },
+  "api": {
+    "type": "http",
+    "method": "POST",
+    "path": "/api/analyze",
+    "content_type": "application/json",
+    "also_get": "/api/analyze?token_address={token_address}",
+    "note": "Paths are relative to the deployment origin."
+  },
+  "mcp": {
+    "transport": "streamable-http",
+    "path": "/api/mcp",
+    "protocol_version": "2025-06-18"
+  },
+  "auth": {
+    "type": "none"
+  },
+  "chain": {
+    "id": 8453,
+    "name": "base"
+  },
+  "cache": {
+    "ttl_seconds": 300,
+    "layers": [
+      "memory-lru",
+      "supabase"
+    ]
+  },
+  "scoring": {
+    "weights": {
+      "mempool_front_running": 0.35,
+      "jit_liquidity_vampire": 0.3,
+      "cross_pair_cascade": 0.35
+    },
+    "thresholds": {
+      "WARN": 35,
+      "DANGER": 65,
+      "model_escalation": 85,
+      "low_confidence": 0.35
+    },
+    "critical_signal_floor": {
+      "min_model_confidence": 0.5,
+      "effect": "SAFE -> WARN"
+    },
+    "cascade_rubric": "impact*2.5 + repricing*0.6 + HHI>0.85:+8 + depth<50k:+20 / <250k:+10 / <1M:+4 + backing>0.5:+10 (non-reference) + hop share>=50%:+8 / >=20%:+3 + CL unfilled>0:+8 (>=20%:+15) + hooked share>=50%:+5"
+  },
+  "tools": [
+    {
+      "name": "analyze_base_token_safety",
+      "title": "Analyze Base token pre-trade safety",
+      "description": "Pre-trade risk gate for a Base (chain 8453) ERC-20. Evaluates (1) Mempool Front-Running Attack Surface: pending-queue bot targeting, or on Base's private mempool, recent sandwich attacks and MEV-searcher share of swap flow, as an execution toxicity %; (2) JIT (Just-In-Time) Liquidity Vampire Risk: high-velocity add/remove liquidity cycles from the same provider around swaps, i.e. transient depth and silent slippage extraction; (3) Cross-Pair Liquidity Cascade Risk: liquidity graph across Uniswap V2/V3/V4 and Aerodrome (basic + Slipstream) pools against WETH, ETH, USDC and two-hop intermediates USDbC/cbBTC, with a simulated liquidation shock in the largest secondary pair and concentrated-liquidity tick-walk price impact. Returns status (SAFE|WARN|DANGER), risk_score (0-100), risk_matrix, and an actionable recommendation. Typical latency: <5 ms cached, 1-3 s uncached.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "token_address"
+        ],
+        "properties": {
+          "token_address": {
+            "type": "string",
+            "pattern": "^0x[a-fA-F0-9]{40}$",
+            "minLength": 42,
+            "maxLength": 42,
+            "description": "ERC-20 contract address on Base mainnet: 0x followed by 40 hex characters (any case).",
+            "examples": [
+              "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+            ]
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tool",
+          "version",
+          "chain_id",
+          "token_address",
+          "status",
+          "risk_score",
+          "confidence",
+          "risk_matrix",
+          "recommendation",
+          "cached",
+          "cache_source",
+          "cache_age_seconds",
+          "checked_at",
+          "ttl_seconds",
+          "latency_ms",
+          "block_number",
+          "token",
+          "pools",
+          "errors"
+        ],
+        "properties": {
+          "tool": {
+            "const": "analyze_base_token_safety"
+          },
+          "version": {
+            "type": "string"
+          },
+          "chain_id": {
+            "const": 8453
+          },
+          "token_address": {
+            "type": "string",
+            "description": "Lowercased input address."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "SAFE",
+              "WARN",
+              "DANGER"
+            ],
+            "description": "SAFE: risk_score < 35. WARN: 35-64, or SAFE with overall confidence < 0.35, or SAFE but any model with confidence >= 0.5 raised a critical signal. DANGER: >= 65, or any single model >= 85 with confidence >= 0.5, or the address is not a contract. Degraded/no-data results are WARN 50, never SAFE."
+          },
+          "risk_score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Confidence-weighted blend: mempool 0.35, JIT 0.30, cascade 0.35."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "risk_matrix": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mempool_front_running",
+              "jit_liquidity_vampire",
+              "cross_pair_cascade"
+            ],
+            "properties": {
+              "mempool_front_running": {
+                "type": "object",
+                "description": "Mempool Front-Running Attack Surface. Uses the live pending queue when the RPC exposes one; on Base (private sequencer mempool) it falls back to recent-block forensics: sandwich patterns and searcher/MEV-bot share of swap flow.",
+                "additionalProperties": false,
+                "required": [
+                  "score",
+                  "status",
+                  "confidence",
+                  "data_available",
+                  "data_source",
+                  "latency_ms",
+                  "metrics",
+                  "signals"
+                ],
+                "properties": {
+                  "score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Model risk score, 0 = no risk, 100 = maximal risk."
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "SAFE",
+                      "WARN",
+                      "DANGER"
+                    ]
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "How much evidence backs the score (0 = none, 1 = full)."
+                  },
+                  "data_available": {
+                    "type": "boolean",
+                    "description": "False when the model could not read on-chain data (timeouts, RPC limits, no pools); score is then a neutral 50."
+                  },
+                  "data_source": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "recent_blocks_fallback",
+                      "unavailable"
+                    ]
+                  },
+                  "latency_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "metrics": {
+                    "type": "object",
+                    "description": "Model-specific numeric evidence. Keys listed are always present when data_available is true.",
+                    "properties": {
+                      "execution_toxicity_pct": {
+                        "type": "number",
+                        "description": "Share of recent swap flow that was sandwich legs/victims or bot flow (heuristic searcher flow weighted 35%), 0-100."
+                      },
+                      "swaps_analyzed": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Swaps decoded in the block window."
+                      },
+                      "sandwiches_detected": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Front-run/back-run pairs bracketing a victim in the same block and pool."
+                      },
+                      "sandwich_victim_swaps": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Swaps caught inside sandwiches."
+                      },
+                      "searcher_flow_share_pct": {
+                        "type": "number",
+                        "description": "Share of swaps from high-frequency two-sided actors."
+                      },
+                      "suspected_mev_bots": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^0x[a-f0-9]{40}$"
+                        },
+                        "description": "Addresses flagged as searchers/MEV bots."
+                      },
+                      "pending_txs_sampled": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Pending transactions inspected (0 on Base public RPC)."
+                      },
+                      "blocks_analyzed": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Blocks in the scanned window."
+                      }
+                    },
+                    "additionalProperties": true
+                  },
+                  "signals": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "code",
+                        "severity",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "pattern": "^[A-Z][A-Z0-9_]*$",
+                          "description": "Stable machine code, e.g. SANDWICH_DETECTED, JIT_CYCLES, SYSTEMIC_COLLAPSE_RISK, CL_LIQUIDITY_EXHAUSTED, CL_TICK_WALK, MULTI_HOP_ROUTE, ROUTED_VIA_INTERMEDIATE, HOP_LEG_UNPRICED, V4_HOOKED_POOL, PRIVATE_MEMPOOL, CHECK_TIMEOUT."
+                        },
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "info",
+                            "warn",
+                            "critical"
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "maxLength": 300
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "jit_liquidity_vampire": {
+                "type": "object",
+                "description": "JIT (Just-In-Time) Liquidity Vampire Risk: same-provider liquidity added and removed within a few blocks around swaps (Uniswap V3/Slipstream Mint/Burn, Uniswap V4 ModifyLiquidity keyed by sender+ticks+salt, V2/Aerodrome LP mints/burns). High values mean quoted depth is transient and passive liquidity is being diluted.",
+                "additionalProperties": false,
+                "required": [
+                  "score",
+                  "status",
+                  "confidence",
+                  "data_available",
+                  "data_source",
+                  "latency_ms",
+                  "metrics",
+                  "signals"
+                ],
+                "properties": {
+                  "score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Model risk score, 0 = no risk, 100 = maximal risk."
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "SAFE",
+                      "WARN",
+                      "DANGER"
+                    ]
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "How much evidence backs the score (0 = none, 1 = full)."
+                  },
+                  "data_available": {
+                    "type": "boolean",
+                    "description": "False when the model could not read on-chain data (timeouts, RPC limits, no pools); score is then a neutral 50."
+                  },
+                  "data_source": {
+                    "type": "string",
+                    "enum": [
+                      "onchain_logs",
+                      "unavailable"
+                    ]
+                  },
+                  "latency_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "metrics": {
+                    "type": "object",
+                    "description": "Model-specific numeric evidence. Keys listed are always present when data_available is true.",
+                    "properties": {
+                      "jit_cycles": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Matched add->remove cycles."
+                      },
+                      "large_jit_cycles": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Cycles >= JIT_MIN_LIQUIDITY_SHARE of pool liquidity."
+                      },
+                      "same_block_cycles": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Cycles opened and closed in one block."
+                      },
+                      "swaps_bracketed_by_jit": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Swaps executed between a JIT mint and its burn."
+                      },
+                      "jit_liquidity_share_pct": {
+                        "type": "number",
+                        "description": "Share of minted liquidity that was JIT, 0-100."
+                      },
+                      "prone_to_slippage_extraction": {
+                        "type": "boolean"
+                      },
+                      "affected_pools": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^0x([a-f0-9]{40}|[a-f0-9]{64})$"
+                        },
+                        "description": "Pools where large JIT cycles occurred."
+                      }
+                    },
+                    "additionalProperties": true
+                  },
+                  "signals": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "code",
+                        "severity",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "pattern": "^[A-Z][A-Z0-9_]*$",
+                          "description": "Stable machine code, e.g. SANDWICH_DETECTED, JIT_CYCLES, SYSTEMIC_COLLAPSE_RISK, CL_LIQUIDITY_EXHAUSTED, CL_TICK_WALK, MULTI_HOP_ROUTE, ROUTED_VIA_INTERMEDIATE, HOP_LEG_UNPRICED, V4_HOOKED_POOL, PRIVATE_MEMPOOL, CHECK_TIMEOUT."
+                        },
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "info",
+                            "warn",
+                            "critical"
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "maxLength": 300
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "cross_pair_cascade": {
+                "type": "object",
+                "description": "Cross-Pair Liquidity Cascade Risk: graph of the token's pools (Uniswap V2/V3/V4, Aerodrome basic + Slipstream) against WETH, native ETH, USDC and the intermediates USDbC/cbBTC (two-hop routes), with each secondary asset's own depth. Simulates a CASCADE_SHOCK_PCT liquidation of the largest pair's secondary asset, then routes a REFERENCE_TRADE_USD sell: CL pools by in-range tick-walk simulation (slot0 + liquidity + tick bitmap/liquidityNet), constant-product pools by x*y=k.",
+                "additionalProperties": false,
+                "required": [
+                  "score",
+                  "status",
+                  "confidence",
+                  "data_available",
+                  "data_source",
+                  "latency_ms",
+                  "metrics",
+                  "signals"
+                ],
+                "properties": {
+                  "score": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Model risk score, 0 = no risk, 100 = maximal risk."
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "SAFE",
+                      "WARN",
+                      "DANGER"
+                    ]
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "How much evidence backs the score (0 = none, 1 = full)."
+                  },
+                  "data_available": {
+                    "type": "boolean",
+                    "description": "False when the model could not read on-chain data (timeouts, RPC limits, no pools); score is then a neutral 50."
+                  },
+                  "data_source": {
+                    "type": "string",
+                    "enum": [
+                      "onchain_state",
+                      "unavailable"
+                    ]
+                  },
+                  "latency_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "metrics": {
+                    "type": "object",
+                    "description": "Model-specific numeric evidence. Keys listed are always present when data_available is true.",
+                    "properties": {
+                      "total_depth_usd": {
+                        "type": "number",
+                        "description": "Sum of pool depth in USD: token+quote balances for V2/V3/Aerodrome pools; in-range liquidity inside the scanned tick window for Uniswap V4 (no per-pool balances)."
+                      },
+                      "concentration_hhi": {
+                        "type": "number",
+                        "description": "Herfindahl index of depth across pools, 0-1."
+                      },
+                      "projected_price_drop_pct": {
+                        "type": "number",
+                        "description": "Projected price drop after the shock, 0-100."
+                      },
+                      "systemic_collapse": {
+                        "type": "boolean",
+                        "description": "True if projected drop >= 40%, post-shock impact >= 15%, post-shock depth < 5x the reference trade, or >= 20% of the post-shock sell cannot be filled inside known CL liquidity."
+                      },
+                      "reference_trade_impact_pct": {
+                        "type": "number",
+                        "description": "Price impact of REFERENCE_TRADE_USD today."
+                      },
+                      "graph": {
+                        "type": "object",
+                        "description": "nodes = token + secondary assets, edges = pools with depth_usd and share_pct."
+                      },
+                      "post_shock_unfilled_pct": {
+                        "type": "number",
+                        "description": "Share of the post-shock reference sell that runs past known in-range liquidity of CL pools without balance fallback (V4), 0-100."
+                      },
+                      "post_shock_max_ticks_crossed": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Most initialized ticks crossed by the post-shock reference sell in a single CL pool."
+                      },
+                      "multi_hop_depth_share_pct": {
+                        "type": "number",
+                        "description": "Share of depth quoted in an intermediate (USDbC, cbBTC) that needs a second hop to USDC/WETH, 0-100."
+                      },
+                      "hooked_pool_depth_share_pct": {
+                        "type": "number",
+                        "description": "Share of depth in configured Uniswap V4 pools with hooks (not modeled), 0-100."
+                      },
+                      "routes": {
+                        "type": "array",
+                        "description": "Per quote asset: hops, path, depth_usd and second_leg_depth_usd for two-hop routes.",
+                        "items": {
+                          "type": "object"
+                        }
+                      },
+                      "impact_breakdown": {
+                        "type": "array",
+                        "description": "Top pools by allocated post-shock flow: model (concentrated_liquidity|constant_product), tick_data (tick_bitmap|tick_spacing_bound), impact_pct, ticks_crossed, window_exhausted, residual_balance_fallback, hops.",
+                        "items": {
+                          "type": "object"
+                        }
+                      },
+                      "coverage": {
+                        "type": "object",
+                        "description": "Venues and quote assets scanned; v4_discovery = hookless_standard_tiers_only | hookless_standard_tiers+configured_keys | disabled."
+                      }
+                    },
+                    "additionalProperties": true
+                  },
+                  "signals": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "code",
+                        "severity",
+                        "message"
+                      ],
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "pattern": "^[A-Z][A-Z0-9_]*$",
+                          "description": "Stable machine code, e.g. SANDWICH_DETECTED, JIT_CYCLES, SYSTEMIC_COLLAPSE_RISK, CL_LIQUIDITY_EXHAUSTED, CL_TICK_WALK, MULTI_HOP_ROUTE, ROUTED_VIA_INTERMEDIATE, HOP_LEG_UNPRICED, V4_HOOKED_POOL, PRIVATE_MEMPOOL, CHECK_TIMEOUT."
+                        },
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "info",
+                            "warn",
+                            "critical"
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "maxLength": 300
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "recommendation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "max_slippage_bps",
+              "split_order",
+              "use_private_order_flow",
+              "avoid_pools"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "PROCEED",
+                  "PROCEED_WITH_LIMITS",
+                  "ABORT"
+                ]
+              },
+              "max_slippage_bps": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "split_order": {
+                "type": "boolean"
+              },
+              "use_private_order_flow": {
+                "type": "boolean"
+              },
+              "avoid_pools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^0x([a-f0-9]{40}|[a-f0-9]{64})$"
+                },
+                "description": "Pools to exclude from routing."
+              },
+              "reasons": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "description": "Why the status was assigned: escalation/floor rules, then critical and warn signals (SEVERITY CODE (model): message)."
+              }
+            }
+          },
+          "token": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "symbol",
+              "name",
+              "decimals",
+              "price_usd",
+              "is_contract"
+            ],
+            "properties": {
+              "symbol": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "decimals": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "price_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "is_contract": {
+                "type": "boolean"
+              }
+            }
+          },
+          "pools": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "address",
+                "dex",
+                "quote",
+                "fee",
+                "tick_spacing",
+                "depth_usd"
+              ],
+              "properties": {
+                "address": {
+                  "type": "string",
+                  "pattern": "^0x([a-f0-9]{40}|[a-f0-9]{64})$",
+                  "description": "Pool contract address (40 hex) or, for Uniswap V4, the 32-byte PoolId (64 hex) inside the singleton PoolManager."
+                },
+                "dex": {
+                  "type": "string",
+                  "enum": [
+                    "uniswap_v3",
+                    "uniswap_v2",
+                    "uniswap_v4",
+                    "aerodrome_volatile",
+                    "aerodrome_stable",
+                    "aerodrome_slipstream"
+                  ]
+                },
+                "quote": {
+                  "type": "string",
+                  "enum": [
+                    "WETH",
+                    "ETH",
+                    "USDC",
+                    "USDbC",
+                    "cbBTC"
+                  ],
+                  "description": "Quote asset. ETH = native ETH (Uniswap V4 only). USDbC and cbBTC are intermediates: exits need a second hop into USDC/WETH."
+                },
+                "fee": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tick_spacing": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "depth_usd": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "hooks": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^0x[a-f0-9]{40}$",
+                  "description": "Uniswap V4 hooks address (zero address = hookless); null for other venues."
+                },
+                "hops": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2,
+                  "description": "1 = direct to WETH/ETH/USDC, 2 = via USDbC or cbBTC."
+                }
+              }
+            }
+          },
+          "cached": {
+            "type": "boolean"
+          },
+          "cache_source": {
+            "type": "string",
+            "enum": [
+              "none",
+              "memory",
+              "supabase"
+            ]
+          },
+          "cache_age_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300
+          },
+          "latency_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "block_number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "annotations": {
+        "title": "Base token pre-trade safety",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
+    }
+  ],
+  "coverage": {
+    "venues": [
+      "uniswap_v2",
+      "uniswap_v3",
+      "uniswap_v4",
+      "aerodrome_volatile",
+      "aerodrome_stable",
+      "aerodrome_slipstream"
+    ],
+    "quote_assets": [
+      "WETH",
+      "ETH (V4)",
+      "USDC",
+      "USDbC (2-hop)",
+      "cbBTC (2-hop)"
+    ],
+    "uniswap_v4": {
+      "pool_manager": "0x498581ff718922c3f8e6a244956af099b2652b2b",
+      "state_view": "0xa3c0c9b65bad0b08107aa264b0f3db444b867a71",
+      "discovery": "hookless pools at fee/tickSpacing 100/1, 500/10, 3000/60, 10000/200; hooked pools only via UNISWAP_V4_POOL_KEYS"
+    }
+  }
+}

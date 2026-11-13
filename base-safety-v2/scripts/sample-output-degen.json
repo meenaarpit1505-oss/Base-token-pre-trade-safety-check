@@ -1,0 +1,465 @@
+{
+  "tool": "analyze_base_token_safety",
+  "version": "2.1.0",
+  "chain_id": 8453,
+  "token_address": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+  "cached": false,
+  "cache_source": "none",
+  "cache_age_seconds": 0,
+  "ttl_seconds": 300,
+  "checked_at": "2026-11-11T05:13:15.768Z",
+  "latency_ms": 1184,
+  "errors": [],
+  "status": "SAFE",
+  "risk_score": 17,
+  "confidence": 0.57,
+  "block_number": 55918095,
+  "token": {
+    "symbol": "DEGEN",
+    "name": "Degen",
+    "decimals": 18,
+    "price_usd": 0.00082287846,
+    "is_contract": true
+  },
+  "pools": [
+    {
+      "address": "0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa",
+      "dex": "uniswap_v3",
+      "quote": "WETH",
+      "fee": 3000,
+      "tick_spacing": 60,
+      "depth_usd": 233481.09,
+      "hooks": null,
+      "hops": 1
+    },
+    {
+      "address": "0x0ca6485b7e9cf814a3fd09d81672b07323535b64",
+      "dex": "uniswap_v3",
+      "quote": "WETH",
+      "fee": 10000,
+      "tick_spacing": 200,
+      "depth_usd": 194124.13,
+      "hooks": null,
+      "hops": 1
+    },
+    {
+      "address": "0x2c4909355b0c036840819484c3a882a95659abf3",
+      "dex": "aerodrome_volatile",
+      "quote": "WETH",
+      "fee": null,
+      "tick_spacing": null,
+      "depth_usd": 14602.25,
+      "hooks": null,
+      "hops": 1
+    },
+    {
+      "address": "0xafb62448929664bfccb0aae22f232520e765ba88",
+      "dex": "aerodrome_slipstream",
+      "quote": "WETH",
+      "fee": null,
+      "tick_spacing": 200,
+      "depth_usd": 9128.68,
+      "hooks": null,
+      "hops": 1
+    },
+    {
+      "address": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+      "dex": "aerodrome_volatile",
+      "quote": "USDC",
+      "fee": null,
+      "tick_spacing": null,
+      "depth_usd": 2018.06,
+      "hooks": null,
+      "hops": 1
+    },
+    {
+      "address": "0xee381526b93d418077a9d1b9c9b495a3d135410af9a58bc2a5f512fb7b61cbf7",
+      "dex": "uniswap_v4",
+      "quote": "ETH",
+      "fee": 3000,
+      "tick_spacing": 60,
+      "depth_usd": 1353.4,
+      "hooks": "0x0000000000000000000000000000000000000000",
+      "hops": 1
+    }
+  ],
+  "risk_matrix": {
+    "mempool_front_running": {
+      "score": 0,
+      "confidence": 0.45,
+      "data_available": true,
+      "data_source": "recent_blocks_fallback",
+      "metrics": {
+        "execution_toxicity_pct": 0,
+        "pending_probe": [
+          {
+            "method": "txpool_content",
+            "ok": true,
+            "txs": 0
+          },
+          {
+            "method": "eth_getBlockByNumber(pending)",
+            "ok": true,
+            "real_pending": false
+          },
+          {
+            "method": "eth_newPendingTransactionFilter",
+            "ok": true,
+            "hashes": 0
+          }
+        ],
+        "pending_txs_sampled": 0,
+        "pending_relevant_txs": 0,
+        "pending_flagged_txs": 0,
+        "blocks_analyzed": 1800,
+        "log_coverage_pct": 100,
+        "log_errors": [],
+        "swaps_analyzed": 13,
+        "searcher_flow_share_pct": 0,
+        "sandwiches_detected": 0,
+        "sandwich_victim_swaps": 0,
+        "sandwich_victim_volume_usd": 0,
+        "suspected_mev_bots": [],
+        "tx_sender_lookups": 0
+      },
+      "signals": [
+        {
+          "code": "PRIVATE_MEMPOOL",
+          "severity": "info",
+          "message": "Base sequencer mempool is private; public RPC exposed no pending transactions. Scored from recent-block forensics (sandwiches, searcher activity) instead."
+        }
+      ],
+      "status": "SAFE",
+      "latency_ms": 898
+    },
+    "jit_liquidity_vampire": {
+      "score": 0,
+      "confidence": 0.5,
+      "data_available": true,
+      "data_source": "onchain_logs",
+      "metrics": {
+        "pools_analyzed": 6,
+        "pools_log_scanned": 6,
+        "v4_pools_scanned": 1,
+        "blocks_analyzed": 1800,
+        "log_coverage_pct": 100,
+        "liquidity_events_analyzed": 0,
+        "jit_window_blocks": 5,
+        "jit_cycles": 0,
+        "large_jit_cycles": 0,
+        "same_block_cycles": 0,
+        "swaps_bracketed_by_jit": 0,
+        "jit_liquidity_share_pct": 0,
+        "prone_to_slippage_extraction": false,
+        "top_jit_providers": [],
+        "affected_pools": []
+      },
+      "signals": [],
+      "status": "SAFE",
+      "latency_ms": 84
+    },
+    "cross_pair_cascade": {
+      "score": 37,
+      "confidence": 0.75,
+      "data_available": true,
+      "data_source": "onchain_state",
+      "metrics": {
+        "pools_found": 6,
+        "dust_pools_ignored": 20,
+        "total_depth_usd": 454707.62,
+        "depth_by_quote_usd": {
+          "WETH": 451336.16,
+          "USDC": 2018.06,
+          "ETH": 1353.4
+        },
+        "concentration_hhi": 0.4474,
+        "concentrated_liquidity_share_pct": 96.34,
+        "largest_pool": "0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa",
+        "largest_pool_tick_data": "tick_bitmap",
+        "tick_scan": "ok",
+        "shock_pct": 30,
+        "shocked_secondary_asset": "WETH",
+        "secondary_asset_depth_usd": 8245609.28,
+        "backing_ratio": 0.0549,
+        "repricing_pct": 29.87,
+        "post_shock_trade_impact_pct": 5.84,
+        "post_shock_depth_usd": 318900.75,
+        "post_shock_unfilled_pct": 0,
+        "post_shock_max_ticks_crossed": 6,
+        "post_shock_exhausted_pools": [],
+        "projected_price_drop_pct": 33.96,
+        "reference_trade_usd": 10000,
+        "reference_trade_impact_pct": 4.183,
+        "effective_cp_depth_usd": 926868.13,
+        "multi_hop_depth_share_pct": 0,
+        "hooked_pool_depth_share_pct": 0,
+        "intermediate_prices_usd": {
+          "USDbC": 1.0001236,
+          "cbBTC": 73649.532
+        },
+        "systemic_collapse": false,
+        "routes": [
+          {
+            "quote_symbol": "WETH",
+            "hops": 1,
+            "path": [
+              "DEGEN",
+              "WETH"
+            ],
+            "depth_usd": 451336.15,
+            "second_leg_depth_usd": null,
+            "pools": 4
+          },
+          {
+            "quote_symbol": "USDC",
+            "hops": 1,
+            "path": [
+              "DEGEN",
+              "USDC"
+            ],
+            "depth_usd": 2018.06,
+            "second_leg_depth_usd": null,
+            "pools": 1
+          },
+          {
+            "quote_symbol": "ETH",
+            "hops": 1,
+            "path": [
+              "DEGEN",
+              "ETH"
+            ],
+            "depth_usd": 1353.4,
+            "second_leg_depth_usd": null,
+            "pools": 1
+          }
+        ],
+        "impact_breakdown": [
+          {
+            "pool": "0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa",
+            "dex": "uniswap_v3",
+            "quote_symbol": "WETH",
+            "model": "concentrated_liquidity",
+            "tick_data": "tick_bitmap",
+            "allocated_usd": 7288.42,
+            "impact_pct": 5.868,
+            "ticks_crossed": 6,
+            "window_exhausted": false,
+            "residual_balance_fallback": false,
+            "filled_pct": 100,
+            "hops": 1
+          },
+          {
+            "pool": "0x0ca6485b7e9cf814a3fd09d81672b07323535b64",
+            "dex": "uniswap_v3",
+            "quote_symbol": "WETH",
+            "model": "concentrated_liquidity",
+            "tick_data": "tick_bitmap",
+            "allocated_usd": 2076.05,
+            "impact_pct": 5.868,
+            "ticks_crossed": 0,
+            "window_exhausted": false,
+            "residual_balance_fallback": false,
+            "filled_pct": 100,
+            "hops": 1
+          },
+          {
+            "pool": "0xafb62448929664bfccb0aae22f232520e765ba88",
+            "dex": "aerodrome_slipstream",
+            "quote_symbol": "WETH",
+            "model": "concentrated_liquidity",
+            "tick_data": "tick_bitmap",
+            "allocated_usd": 346.85,
+            "impact_pct": 5.055,
+            "ticks_crossed": 1,
+            "window_exhausted": false,
+            "residual_balance_fallback": false,
+            "filled_pct": 100,
+            "hops": 1
+          },
+          {
+            "pool": "0x2c4909355b0c036840819484c3a882a95659abf3",
+            "dex": "aerodrome_volatile",
+            "quote_symbol": "WETH",
+            "model": "constant_product",
+            "tick_data": null,
+            "allocated_usd": 156.9,
+            "impact_pct": 5.868,
+            "ticks_crossed": 0,
+            "window_exhausted": false,
+            "residual_balance_fallback": false,
+            "filled_pct": 100,
+            "hops": 1
+          },
+          {
+            "pool": "0xee381526b93d418077a9d1b9c9b495a3d135410af9a58bc2a5f512fb7b61cbf7",
+            "dex": "uniswap_v4",
+            "quote_symbol": "ETH",
+            "model": "concentrated_liquidity",
+            "tick_data": "tick_bitmap",
+            "allocated_usd": 100.8,
+            "impact_pct": 5.868,
+            "ticks_crossed": 0,
+            "window_exhausted": false,
+            "residual_balance_fallback": false,
+            "filled_pct": 100,
+            "hops": 1
+          },
+          {
+            "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+            "dex": "aerodrome_volatile",
+            "quote_symbol": "USDC",
+            "model": "constant_product",
+            "tick_data": null,
+            "allocated_usd": 30.98,
+            "impact_pct": 5.868,
+            "ticks_crossed": 0,
+            "window_exhausted": false,
+            "residual_balance_fallback": false,
+            "filled_pct": 100,
+            "hops": 1
+          }
+        ],
+        "coverage": {
+          "venues": [
+            "uniswap_v2",
+            "uniswap_v3",
+            "uniswap_v4",
+            "aerodrome_volatile",
+            "aerodrome_stable",
+            "aerodrome_slipstream"
+          ],
+          "quote_assets": [
+            "WETH",
+            "USDC",
+            "USDbC",
+            "cbBTC",
+            "ETH"
+          ],
+          "v4_discovery": "hookless_standard_tiers_only",
+          "v4_candidates_checked": 20,
+          "v4_pools_live": 6
+        },
+        "graph": {
+          "nodes": [
+            "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+            "0x4200000000000000000000000000000000000006",
+            "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "0x0000000000000000000000000000000000000000"
+          ],
+          "edges": [
+            {
+              "pool": "0xc9034c3e7f58003e6ae0c8438e7c8f4598d5acaa",
+              "dex": "uniswap_v3",
+              "fee": 3000,
+              "tick_spacing": 60,
+              "hooks": null,
+              "from": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+              "to": "0x4200000000000000000000000000000000000006",
+              "quote_symbol": "WETH",
+              "hops": 1,
+              "depth_usd": 233481.09,
+              "in_range_window_depth_usd": 25077.24,
+              "share_pct": 51.35
+            },
+            {
+              "pool": "0x0ca6485b7e9cf814a3fd09d81672b07323535b64",
+              "dex": "uniswap_v3",
+              "fee": 10000,
+              "tick_spacing": 200,
+              "hooks": null,
+              "from": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+              "to": "0x4200000000000000000000000000000000000006",
+              "quote_symbol": "WETH",
+              "hops": 1,
+              "depth_usd": 194124.13,
+              "in_range_window_depth_usd": 134295.13,
+              "share_pct": 42.69
+            },
+            {
+              "pool": "0x2c4909355b0c036840819484c3a882a95659abf3",
+              "dex": "aerodrome_volatile",
+              "fee": null,
+              "tick_spacing": null,
+              "hooks": null,
+              "from": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+              "to": "0x4200000000000000000000000000000000000006",
+              "quote_symbol": "WETH",
+              "hops": 1,
+              "depth_usd": 14602.25,
+              "in_range_window_depth_usd": null,
+              "share_pct": 3.21
+            },
+            {
+              "pool": "0xafb62448929664bfccb0aae22f232520e765ba88",
+              "dex": "aerodrome_slipstream",
+              "fee": null,
+              "tick_spacing": 200,
+              "hooks": null,
+              "from": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+              "to": "0x4200000000000000000000000000000000000006",
+              "quote_symbol": "WETH",
+              "hops": 1,
+              "depth_usd": 9128.68,
+              "in_range_window_depth_usd": 3225.6,
+              "share_pct": 2.01
+            },
+            {
+              "pool": "0x637ad8d2611d3efe2ef41fdbb40b9f21abaf9585",
+              "dex": "aerodrome_volatile",
+              "fee": null,
+              "tick_spacing": null,
+              "hooks": null,
+              "from": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+              "to": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+              "quote_symbol": "USDC",
+              "hops": 1,
+              "depth_usd": 2018.06,
+              "in_range_window_depth_usd": null,
+              "share_pct": 0.44
+            },
+            {
+              "pool": "0xee381526b93d418077a9d1b9c9b495a3d135410af9a58bc2a5f512fb7b61cbf7",
+              "dex": "uniswap_v4",
+              "fee": 3000,
+              "tick_spacing": 60,
+              "hooks": "0x0000000000000000000000000000000000000000",
+              "from": "0x4ed4e862860bed51a9570b96d89af5e1b0efefed",
+              "to": "0x0000000000000000000000000000000000000000",
+              "quote_symbol": "ETH",
+              "hops": 1,
+              "depth_usd": 1353.4,
+              "in_range_window_depth_usd": 1353.4,
+              "share_pct": 0.3
+            }
+          ]
+        }
+      },
+      "signals": [
+        {
+          "code": "CASCADE_SENSITIVE",
+          "severity": "warn",
+          "message": "Projected 34% drawdown under a 30% secondary-pair shock."
+        },
+        {
+          "code": "CL_TICK_WALK",
+          "severity": "info",
+          "message": "Post-shock reference sell crosses up to 6 initialized tick(s) in one pool."
+        }
+      ],
+      "status": "WARN",
+      "latency_ms": 3
+    }
+  },
+  "recommendation": {
+    "action": "PROCEED",
+    "max_slippage_bps": 50,
+    "split_order": false,
+    "use_private_order_flow": false,
+    "avoid_pools": [],
+    "reasons": [
+      "WARN CASCADE_SENSITIVE (cross_pair_cascade): Projected 34% drawdown under a 30% secondary-pair shock.",
+      "INFO PRIVATE_MEMPOOL (mempool_front_running): Base sequencer mempool is private; public RPC exposed no pending transactions. Scored from recent-block forensics (sandwiches, searcher activity) instead.",
+      "INFO CL_TICK_WALK (cross_pair_cascade): Post-shock reference sell crosses up to 6 initialized tick(s) in one pool."
+    ]
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "base-token-safety",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pre-trade token safety API for autonomous trading agents on Base.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "mcp": "tsx src/mcp.ts",
+    "build": "tsc -p tsconfig.json",
+    "compile:simulator": "tsx scripts/compile-simulator.ts",
+    "test": "vitest run",
+    "test:integration": "tsx scripts/integration.ts",
+    "check": "tsx scripts/check-token.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.6",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@supabase/supabase-js": "^2.119.0",
+    "hono": "^4.10.7",
+    "pg": "^8.23.1",
+    "viem": "^2.45.0",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/pg": "^8.15.6",
+    "solc": "^0.8.28",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  },
+  "overrides": {
+    "tmp": "0.2.7"
+  }
+}
