@@ -147,12 +147,146 @@ export function paymentRequirements(cfg) {
   };
 }
 
-export function paymentRequiredDocument(cfg, resourceUrl, error) {
+export const EXAMPLE_TOKEN = BASE_USDC;
+export const BAZAAR_SERVICE_NAME = 'Base Token Safety';
+export const BAZAAR_TAGS = ['base', 'token-safety', 'defi', 'pre-trade', 'x402'];
+export const MCP_TOOL_NAME = 'analyze_base_token_safety';
+
+/** Strip query/hash so Bazaar catalogs one resource per path, not per token. */
+export function canonicalResourceUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+function inferKind(url) {
+  try {
+    return new URL(url).pathname.toLowerCase().includes('/mcp') ? 'mcp' : 'http';
+  } catch {
+    return String(url).toLowerCase().includes('/mcp') ? 'mcp' : 'http';
+  }
+}
+
+function httpMethod(method) {
+  const upper = String(method ?? 'GET').toUpperCase();
+  return upper === 'POST' || upper === 'PUT' || upper === 'PATCH' ? 'POST' : 'GET';
+}
+
+const V2_OUTPUT_EXAMPLE = {
+  tool: MCP_TOOL_NAME,
+  version: '2.2.0',
+  chain_id: 8453,
+  token_address: EXAMPLE_TOKEN,
+  status: 'SAFE',
+  risk_score: 10,
+  recommendation: { action: 'PROCEED' },
+};
+
+/** x402 Bazaar discovery extension (info + validating schema). See https://docs.x402.org/extensions/bazaar */
+export function bazaarExtension(resourceUrl, options = {}) {
+  const kind = options.kind ?? inferKind(resourceUrl);
+  if (kind === 'mcp') {
+    const info = {
+      input: {
+        type: 'mcp',
+        toolName: options.toolName || MCP_TOOL_NAME,
+        description: 'Pre-trade risk gate for a Base (chain 8453) ERC-20: mempool, JIT liquidity, and cascade risk.',
+        transport: 'streamable-http',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            token_address: { type: 'string', description: 'ERC-20 contract address on Base mainnet (0x + 40 hex characters).' },
+          },
+          required: ['token_address'],
+        },
+        example: { token_address: EXAMPLE_TOKEN },
+      },
+      output: { type: 'json', example: V2_OUTPUT_EXAMPLE },
+    };
+    return {
+      info,
+      schema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        properties: {
+          input: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', const: 'mcp' },
+              toolName: { type: 'string' },
+              description: { type: 'string' },
+              transport: { type: 'string', enum: ['streamable-http', 'sse'] },
+              inputSchema: { type: 'object' },
+              example: { type: 'object' },
+            },
+            required: ['type', 'toolName', 'inputSchema'],
+            additionalProperties: false,
+          },
+          output: {
+            type: 'object',
+            properties: { type: { type: 'string' }, example: { type: 'object' } },
+            required: ['type'],
+          },
+        },
+        required: ['input'],
+      },
+    };
+  }
+
+  const method = httpMethod(options.method);
+  const input =
+    method === 'POST'
+      ? { type: 'http', method: 'POST', bodyType: 'json', body: { token_address: EXAMPLE_TOKEN } }
+      : { type: 'http', method: 'GET', queryParams: { token_address: EXAMPLE_TOKEN } };
+  const inputProperties =
+    method === 'POST'
+      ? {
+          type: { type: 'string', const: 'http' },
+          method: { type: 'string', enum: ['POST', 'PUT', 'PATCH'] },
+          bodyType: { type: 'string', enum: ['json', 'form-data', 'text'] },
+          body: { type: 'object' },
+          queryParams: { type: 'object', additionalProperties: { type: 'string' } },
+          headers: { type: 'object', additionalProperties: { type: 'string' } },
+        }
+      : {
+          type: { type: 'string', const: 'http' },
+          method: { type: 'string', enum: ['GET', 'HEAD', 'DELETE'] },
+          queryParams: { type: 'object', properties: { token_address: { type: 'string' } } },
+          headers: { type: 'object', additionalProperties: { type: 'string' } },
+        };
+  const inputRequired = method === 'POST' ? ['type', 'method', 'bodyType', 'body'] : ['type', 'method'];
+  return {
+    info: { input, output: { type: 'json', example: V2_OUTPUT_EXAMPLE } },
+    schema: {
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      type: 'object',
+      properties: {
+        input: { type: 'object', properties: inputProperties, required: inputRequired, additionalProperties: false },
+        output: { type: 'object', properties: { type: { type: 'string' }, example: { type: 'object' } }, required: ['type'] },
+      },
+      required: ['input'],
+    },
+  };
+}
+
+export function paymentRequiredDocument(cfg, resourceUrl, error, options = {}) {
+  const url = canonicalResourceUrl(resourceUrl);
+  const kind = options.kind ?? inferKind(resourceUrl);
   return {
     x402Version: X402_VERSION,
     error,
-    resource: { url: resourceUrl, description: 'Base token pre-trade safety check', mimeType: 'application/json' },
+    resource: {
+      url,
+      description: 'Base token pre-trade safety check',
+      mimeType: 'application/json',
+      serviceName: BAZAAR_SERVICE_NAME,
+      tags: [...BAZAAR_TAGS],
+    },
     accepts: cfg.payTo ? [paymentRequirements(cfg)] : [],
+    extensions: { bazaar: bazaarExtension(resourceUrl, { ...options, kind }) },
   };
 }
 
@@ -315,8 +449,8 @@ function deny(cfg, status, body, extraHeaders = {}) {
   return { ok: false, status, body, headers: { ...billingHeaders(cfg), ...extraHeaders } };
 }
 
-function paymentRequired(cfg, resourceUrl, message) {
-  const doc = paymentRequiredDocument(cfg, resourceUrl, message);
+function paymentRequired(cfg, resourceUrl, message, options = {}) {
+  const doc = paymentRequiredDocument(cfg, resourceUrl, message, options);
   return deny(
     cfg,
     402,
@@ -363,25 +497,26 @@ export async function authorizeCall(request, deps = {}) {
 
   // x402
   const resourceUrl = deps.resourceUrl ?? request.url;
+  const discovery = { kind: deps.kind ?? inferKind(resourceUrl), method: deps.method ?? request.method };
   const payment = h('payment-signature') || h('x-payment');
-  if (!payment || payment.length > 12_000) return paymentRequired(cfg, resourceUrl, unpaidMessage(cfg));
+  if (!payment || payment.length > 12_000) return paymentRequired(cfg, resourceUrl, unpaidMessage(cfg), discovery);
   if (cfg.acceptStub && payment.startsWith('stub:')) {
-    if (!/^stub:[A-Za-z0-9._:-]{1,64}$/.test(payment)) return paymentRequired(cfg, resourceUrl, 'X-Payment stub must look like stub:<client-id>.');
+    if (!/^stub:[A-Za-z0-9._:-]{1,64}$/.test(payment)) return paymentRequired(cfg, resourceUrl, 'X-Payment stub must look like stub:<client-id>.', discovery);
     return okResult(`x402:${payment.slice(0, 64)}`);
   }
   const gap = settlementGap(cfg);
-  if (gap) return paymentRequired(cfg, resourceUrl, `${gap} No payment was submitted.`);
+  if (gap) return paymentRequired(cfg, resourceUrl, `${gap} No payment was submitted.`, discovery);
   const parsed = parsePaymentHeader(payment);
-  if (!parsed.ok) return paymentRequired(cfg, resourceUrl, parsed.reason);
+  if (!parsed.ok) return paymentRequired(cfg, resourceUrl, parsed.reason, discovery);
   const req = paymentRequirements(cfg);
   const now = deps.now ?? Math.floor(Date.now() / 1000);
   const reason = rejectionReason(parsed.payment, req, now);
-  if (reason) return paymentRequired(cfg, resourceUrl, reason);
-  if (!reserveNonce(parsed.payment.nonce, 120_000)) return paymentRequired(cfg, resourceUrl, 'This payment nonce is already in use.');
+  if (reason) return paymentRequired(cfg, resourceUrl, reason, discovery);
+  if (!reserveNonce(parsed.payment.nonce, 120_000)) return paymentRequired(cfg, resourceUrl, 'This payment nonce is already in use.', discovery);
   const verified = await facilitatorCall('verify', parsed.payment.raw, req, cfg, deps.fetch);
   if (!verified.ok) {
     releaseNonce(parsed.payment.nonce);
-    return paymentRequired(cfg, resourceUrl, verified.reason);
+    return paymentRequired(cfg, resourceUrl, verified.reason, discovery);
   }
   const payer = (verified.payer ?? parsed.payment.payer).toLowerCase();
   let finalized = false;
@@ -395,7 +530,7 @@ export async function authorizeCall(request, deps = {}) {
     const settled = await facilitatorCall('settle', parsed.payment.raw, req, cfg, deps.fetch);
     if (!settled.ok) {
       releaseNonce(parsed.payment.nonce);
-      return paymentRequired(cfg, resourceUrl, settled.reason);
+      return paymentRequired(cfg, resourceUrl, settled.reason, discovery);
     }
     holdNonce(parsed.payment.nonce, parsed.payment.validBefore);
     return {

@@ -298,6 +298,25 @@ const cpPool = ({ address, quote, depthUsd, dex = 'uniswap_v2' }) => ({ address,
   assert(!unpaid.ok && unpaid.status === 402 && unpaid.headers['payment-required'], 'billing: x402 unpaid => 402 + PAYMENT-REQUIRED');
   const doc = JSON.parse(atob(unpaid.headers['payment-required']));
   assert(doc.x402Version === 2 && Array.isArray(doc.accepts) && doc.accepts.length === 0, 'billing: no pay-to => no invented accepts');
+  assert(doc.resource?.url === 'https://svc.test/api/analyze' && !String(doc.resource.url).includes('?'), 'billing: bazaar resource URL is canonical (no query)');
+  assert(doc.resource?.serviceName === 'Base Token Safety' && Array.isArray(doc.resource.tags) && doc.resource.tags.length <= 5, 'billing: bazaar service metadata');
+  assert(doc.extensions?.bazaar?.info?.input?.type === 'http' && doc.extensions.bazaar.info.input.method === 'POST' && doc.extensions.bazaar.info.input.bodyType === 'json', 'billing: HTTP POST bazaar input');
+  assert(doc.extensions.bazaar.schema?.properties?.input && doc.extensions.bazaar.schema.required?.includes('input'), 'billing: bazaar schema present');
+  const mcpUnpaid = await B.authorizeCall(new Request('https://svc.test/api/mcp', { method: 'POST' }), { cfg: stubCfg });
+  const mcpDoc = JSON.parse(atob(mcpUnpaid.headers['payment-required']));
+  assert(mcpDoc.extensions?.bazaar?.info?.input?.type === 'mcp' && mcpDoc.extensions.bazaar.info.input.toolName === 'analyze_base_token_safety', 'billing: MCP bazaar input for /api/mcp');
+  assert(mcpDoc.extensions.bazaar.info.input.transport === 'streamable-http' && mcpDoc.extensions.bazaar.info.input.inputSchema, 'billing: MCP bazaar transport + inputSchema');
+
+  // listing files
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const root = path.resolve(import.meta.dirname, '../..');
+  const server = JSON.parse(fs.readFileSync(path.join(root, 'server.json'), 'utf8'));
+  assert(server.name === 'io.github.meenaarpit1505-oss/base-token-safety', 'server.json: GitHub namespace of the repo owner');
+  assert(server.description.length <= 100, 'server.json: official registry description limit');
+  assert(server.remotes?.[0]?.type === 'streamable-http' && server.remotes[0].url.endsWith('/api/mcp'), 'server.json: remote Streamable HTTP MCP');
+  const card = JSON.parse(fs.readFileSync(path.join(root, 'base-safety-v2/public/.well-known/mcp/server-card.json'), 'utf8'));
+  assert(card.serverInfo?.name && card.tools?.[0]?.name === 'analyze_base_token_safety', 'smithery server-card: tool present');
   assert((await B.authorizeCall(reqWith({ 'x-payment': 'stub:agent-1' }), { cfg: stubCfg })).ok, 'billing: stub accepted when X402_ACCEPT_STUB=true');
   const stubOff = B.loadBillingConfig({ BILLING_MODE: 'x402', X402_PAY_TO: '0x' + '1'.repeat(40), X402_FACILITATOR_URL: 'https://f.test' });
   assert(!(await B.authorizeCall(reqWith({ 'x-payment': 'stub:agent-1' }), { cfg: stubOff })).ok, 'billing: stub rejected by default');

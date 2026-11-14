@@ -42,7 +42,7 @@ function unpaidMessage(): string {
 
 function paymentRequired(c: Context, message: string): Response {
   const config = getConfig();
-  const document = paymentRequiredDocument(config, c.req.url, message);
+  const document = paymentRequiredDocument(config, c.req.url, message, { method: c.req.method });
   let amount = "0";
   try {
     amount = usdcAtomicUnits(config.priceUsd);
