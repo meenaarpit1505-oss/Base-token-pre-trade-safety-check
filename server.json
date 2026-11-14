@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.meenaarpit1505-oss/base-token-safety",
+  "title": "Base Token Safety",
+  "description": "Pre-trade token safety for Base (8453): mempool, JIT liquidity, and cascade risk.",
+  "version": "2.2.0",
+  "websiteUrl": "https://github.com/meenaarpit1505-oss/Base-token-pre-trade-safety-check",
+  "repository": {
+    "url": "https://github.com/meenaarpit1505-oss/Base-token-pre-trade-safety-check",
+    "source": "github",
+    "id": "1447023461"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://base-safety-v2-production.up.railway.app/api/mcp"
+    }
+  ]
+}

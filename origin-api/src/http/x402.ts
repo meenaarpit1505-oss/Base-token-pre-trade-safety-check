@@ -60,17 +60,175 @@ export function paymentRequirements(config: AppConfig): PaymentRequirements {
   };
 }
 
-export function paymentRequiredDocument(config: AppConfig, resourceUrl: string, error: string): Record<string, unknown> {
+export const EXAMPLE_TOKEN = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+export const BAZAAR_SERVICE_NAME = "Base Token Safety";
+export const BAZAAR_TAGS = ["base", "token-safety", "defi", "pre-trade", "x402"] as const;
+
+export interface PaymentRequiredOptions {
+  /** HTTP method of the unpaid request. Defaults to GET. */
+  method?: string;
+  /** Override discovery type. Inferred from the resource path when omitted. */
+  kind?: "http" | "mcp";
+}
+
+/** Strip query/hash so Bazaar catalogs one resource per path, not per token. */
+export function canonicalResourceUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+function inferKind(url: string): "http" | "mcp" {
+  try {
+    return new URL(url).pathname.toLowerCase().includes("/mcp") ? "mcp" : "http";
+  } catch {
+    return url.toLowerCase().includes("/mcp") ? "mcp" : "http";
+  }
+}
+
+function httpMethod(method?: string): "GET" | "POST" {
+  const upper = (method ?? "GET").toUpperCase();
+  return upper === "POST" || upper === "PUT" || upper === "PATCH" ? "POST" : "GET";
+}
+
+const ORIGIN_OUTPUT_EXAMPLE = {
+  schemaVersion: 1,
+  chain: "base",
+  chainId: 8453,
+  address: EXAMPLE_TOKEN,
+  verdict: "caution",
+  honeypot: false,
+  buyTax: 0,
+  sellTax: 0,
+  lpLockedPct: -1,
+  liquidityUsd: 0,
+  holdersTop10Pct: -1,
+  reasons: [],
+  notes: [],
+};
+
+/** x402 Bazaar discovery extension (info + validating schema). See https://docs.x402.org/extensions/bazaar */
+export function bazaarExtension(resourceUrl: string, options: PaymentRequiredOptions = {}): Record<string, unknown> {
+  const kind = options.kind ?? inferKind(resourceUrl);
+  if (kind === "mcp") {
+    const info = {
+      input: {
+        type: "mcp",
+        toolName: "check_base_token_safety",
+        description: "Pre-trade safety check for an ERC-20 on Base (chain 8453).",
+        transport: "streamable-http",
+        inputSchema: {
+          type: "object",
+          properties: {
+            token_address: { type: "string", description: "ERC-20 contract address on Base mainnet (0x + 40 hex characters)." },
+          },
+          required: ["token_address"],
+        },
+        example: { token_address: EXAMPLE_TOKEN },
+      },
+      output: { type: "json", example: ORIGIN_OUTPUT_EXAMPLE },
+    };
+    return {
+      info,
+      schema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: {
+          input: {
+            type: "object",
+            properties: {
+              type: { type: "string", const: "mcp" },
+              toolName: { type: "string" },
+              description: { type: "string" },
+              transport: { type: "string", enum: ["streamable-http", "sse"] },
+              inputSchema: { type: "object" },
+              example: { type: "object" },
+            },
+            required: ["type", "toolName", "inputSchema"],
+            additionalProperties: false,
+          },
+          output: {
+            type: "object",
+            properties: { type: { type: "string" }, example: { type: "object" } },
+            required: ["type"],
+          },
+        },
+        required: ["input"],
+      },
+    };
+  }
+
+  const method = httpMethod(options.method);
+  const isOriginPath = (() => {
+    try {
+      return new URL(canonicalResourceUrl(resourceUrl)).pathname.includes("/v1/token-safety");
+    } catch {
+      return resourceUrl.includes("/v1/token-safety");
+    }
+  })();
+  const input =
+    method === "POST"
+      ? { type: "http", method: "POST", bodyType: "json", body: isOriginPath ? { chain: "base", address: EXAMPLE_TOKEN } : { token_address: EXAMPLE_TOKEN } }
+      : {
+          type: "http",
+          method: "GET",
+          queryParams: isOriginPath ? { chain: "base", address: EXAMPLE_TOKEN } : { token_address: EXAMPLE_TOKEN },
+        };
+  const inputProperties: Record<string, unknown> =
+    method === "POST"
+      ? {
+          type: { type: "string", const: "http" },
+          method: { type: "string", enum: ["POST", "PUT", "PATCH"] },
+          bodyType: { type: "string", enum: ["json", "form-data", "text"] },
+          body: { type: "object" },
+          queryParams: { type: "object", additionalProperties: { type: "string" } },
+          headers: { type: "object", additionalProperties: { type: "string" } },
+        }
+      : {
+          type: { type: "string", const: "http" },
+          method: { type: "string", enum: ["GET", "HEAD", "DELETE"] },
+          queryParams: { type: "object", properties: isOriginPath ? { chain: { type: "string" }, address: { type: "string" } } : { token_address: { type: "string" } } },
+          headers: { type: "object", additionalProperties: { type: "string" } },
+        };
+  const inputRequired = method === "POST" ? ["type", "method", "bodyType", "body"] : ["type", "method"];
+  return {
+    info: { input, output: { type: "json", example: ORIGIN_OUTPUT_EXAMPLE } },
+    schema: {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        input: { type: "object", properties: inputProperties, required: inputRequired, additionalProperties: false },
+        output: { type: "object", properties: { type: { type: "string" }, example: { type: "object" } }, required: ["type"] },
+      },
+      required: ["input"],
+    },
+  };
+}
+
+export function paymentRequiredDocument(
+  config: AppConfig,
+  resourceUrl: string,
+  error: string,
+  options: PaymentRequiredOptions = {},
+): Record<string, unknown> {
   const accepts = config.x402PayTo ? [paymentRequirements(config)] : [];
+  const url = canonicalResourceUrl(resourceUrl);
+  const kind = options.kind ?? inferKind(resourceUrl);
   return {
     x402Version: X402_VERSION,
     error,
     resource: {
-      url: resourceUrl,
+      url,
       description: "Base token safety check",
       mimeType: "application/json",
+      serviceName: BAZAAR_SERVICE_NAME,
+      tags: [...BAZAAR_TAGS],
     },
     accepts,
+    extensions: { bazaar: bazaarExtension(resourceUrl, { ...options, kind }) },
   };
 }
 

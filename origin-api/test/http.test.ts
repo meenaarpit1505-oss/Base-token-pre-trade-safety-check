@@ -95,7 +95,21 @@ describe("HTTP surface", () => {
     expect(body.accepts[0]?.payTo).toBe(payTo);
     const encoded = unpaid.headers.get("payment-required");
     expect(encoded).toBeTruthy();
-    const required = JSON.parse(Buffer.from(encoded ?? "", "base64").toString("utf8")) as { x402Version: number };
+    const required = JSON.parse(Buffer.from(encoded ?? "", "base64").toString("utf8")) as {
+      x402Version: number;
+      resource: { url: string; serviceName?: string; tags?: string[] };
+      extensions?: { bazaar?: { info?: { input?: { type?: string; method?: string; queryParams?: Record<string, string> } }; schema?: { required?: string[] } } };
+    };
     expect(required.x402Version).toBe(2);
+    expect(required.resource.url).toBe("http://localhost/v1/token-safety");
+    expect(required.resource.serviceName).toBe("Base Token Safety");
+    expect(required.resource.tags).toEqual(["base", "token-safety", "defi", "pre-trade", "x402"]);
+    expect(required.extensions?.bazaar?.info?.input?.type).toBe("http");
+    expect(required.extensions?.bazaar?.info?.input?.method).toBe("GET");
+    expect(required.extensions?.bazaar?.info?.input?.queryParams).toEqual({
+      chain: "base",
+      address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    });
+    expect(required.extensions?.bazaar?.schema?.required).toContain("input");
   });
 });

@@ -1,0 +1,28 @@
+{
+  "serverInfo": {
+    "name": "Base Token Pre-Trade Safety Check",
+    "version": "2.2.0"
+  },
+  "authentication": {
+    "required": false,
+    "schemes": []
+  },
+  "tools": [
+    {
+      "name": "analyze_base_token_safety",
+      "description": "Pre-trade risk gate for a Base (chain 8453) ERC-20. Evaluates mempool front-running, JIT liquidity, and cross-pair cascade risk. Input: token_address only. Returns status SAFE | WARN | DANGER, risk_score 0-100, and a recommendation. When BILLING_MODE=x402, tools/call requires an x402 payment; initialize and tools/list stay free.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "token_address": {
+            "type": "string",
+            "description": "ERC-20 contract address on Base mainnet (0x followed by 40 hex characters)."
+          }
+        },
+        "required": ["token_address"]
+      }
+    }
+  ],
+  "resources": [],
+  "prompts": []
+}
