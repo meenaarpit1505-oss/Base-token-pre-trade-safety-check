@@ -41,7 +41,7 @@ export interface TokenSafetyResponse {
   buyTax: number;
   sellTax: number;
   ownerCanMint: boolean;
-  /** -1 when LP lock cannot be measured (concentrated liquidity, or no pool). */
+  /** -1 when LP lock cannot be measured (no pool, unreadable, or CL with no burned / known-locker position found). For CL pools a value is a lower bound (see the lp_lock_floor note). */
   lpLockedPct: number;
   /** -1 when USD liquidity could not be priced. 0 means no supported pool. */
   liquidityUsd: number;

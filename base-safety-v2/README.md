@@ -1,4 +1,4 @@
-# Base Token Pre-Trade Safety Check — v2.1
+# Base Token Pre-Trade Safety Check — v2.2
 
 A read-only risk check that a trading agent calls before it swaps a token on Base (chain 8453). You send one `token_address` and get back `status` (SAFE | WARN | DANGER), a `risk_score` from 0 to 100, a `risk_matrix` with three threat models, and a recommendation (with `reasons`) the agent can act on.
 
@@ -7,6 +7,7 @@ A read-only risk check that a trading agent calls before it swaps a token on Bas
 | `ai-plugin.json` | Tool manifest (MCP-style). Defines `analyze_base_token_safety`, its strict `inputSchema` and full `outputSchema`, scoring weights, thresholds, cascade rubric and venue coverage |
 | `lib/safetyEngine.js` | The three threat models, run in parallel. Uses viem with multicall batching, per-check timeouts and bounded log windows. It never throws |
 | `lib/clMath.js` | Pure concentrated-liquidity math: tick bitmap decoding, piecewise liquidity profile, in-range swap simulation, window amounts, CP helpers |
+| `lib/billing.js` | Optional payment gate (`BILLING_MODE` open / api_key / x402), mirrors `origin-api/src/http/billing.ts` + `x402.ts`; Edge-safe |
 | `lib/cacheLayer.js` | In-memory LRU, then single-flight, then a 300 s Supabase lookup, then the engine. Writes back to Supabase in the background via `waitUntil` |
 | `app/api/analyze/route.js` | Next.js Edge route: `GET ?token_address=` or `POST {"token_address"}` |
 | `app/api/mcp/route.js` | Stateless MCP server (Streamable HTTP, JSON responses) that supports `initialize`, `tools/list` and `tools/call` |
@@ -34,7 +35,7 @@ Supabase setup: run `supabase/schema.sql` in the SQL editor, then set `SUPABASE_
 | --- | --- | --- | --- |
 | Uniswap V2 | `getPair` | reserves, balances, LP supply | Swap / Mint / Burn + LP mints |
 | Uniswap V3 | `getPool` × fee 100/500/3000/10000 | slot0, liquidity, balances, tick bitmap + `ticks()` | Swap / Mint / Burn |
-| **Uniswap V4** | PoolId = `keccak256(abi.encode(PoolKey))` for hookless pools at 100/1, 500/10, 3000/60, 10000/200, plus `UNISWAP_V4_POOL_KEYS` | StateView `getSlot0`, `getLiquidity`, `getTickBitmap`, `getTickLiquidity` | PoolManager `Swap` / `ModifyLiquidity` filtered by pool id (topic1) |
+| **Uniswap V4** | PoolId = `keccak256(abi.encode(PoolKey))` for hookless pools at 100/1, 500/10, 3000/60, 10000/200, plus `UNISWAP_V4_POOL_KEYS`, plus (env-gated) PoolManager `Initialize` logs for hooked / custom-tier pools | StateView `getSlot0`, `getLiquidity`, `getTickBitmap`, `getTickLiquidity` | PoolManager `Swap` / `ModifyLiquidity` filtered by pool id (topic1) |
 | Aerodrome basic | `getPool(a,b,stable)` | reserves, balances, LP supply | Swap / Burn + LP mints |
 | Aerodrome Slipstream | 3 official factories × tick spacing 1/50/100/200/2000 | slot0, liquidity, balances, tick bitmap + `ticks()` | Swap / Mint / Burn (V3 layout) |
 
@@ -96,14 +97,30 @@ Live calibration (Base mainnet, 2026-11-11, public RPC): USDC SAFE 0, WETH SAFE 
 - Per-model `AbortController` deadlines plus the global `ENGINE_TIMEOUT_MS` (9.5 s).
 - Cache layers: in-memory LRU, single-flight, Supabase read capped at 250 ms, `CDN-Cache-Control: s-maxage≤60` on GET.
 
+## Billing (optional, v2.2)
+
+`BILLING_MODE` gates `/api/analyze` and MCP `tools/call` (an invalid `token_address`, `initialize`, `tools/list` and `ping` stay free). Same approach as `origin-api`.
+
+| Mode | Caller sends | Server does |
+| --- | --- | --- |
+| `open` (default) | nothing | unchanged behaviour |
+| `api_key` | `X-Api-Key: <prepaid key>` | Supabase RPC `deduct_api_key_balance(p_key, p_cost=PRICE_USD)` before the analysis (atomic `UPDATE … WHERE balance >= cost`). Unknown / empty key → 402, missing header → 401. Schema: `origin-api/supabase/migrations/20261105120000_api_keys.sql` (same Supabase project as the cache). |
+| `x402` | `PAYMENT-SIGNATURE: <base64 x402 v2 payload>` (or `X-Payment`) | No payment → **402** with `PAYMENT-REQUIRED` (base64 JSON: `x402Version: 2`, `accepts: [{scheme: "exact", network: "eip155:8453", amount: "10000", asset: USDC, payTo: X402_PAY_TO, extra: {assetTransferMethod: "eip3009", name: "USD Coin", version: "2"}}]`). With payment: local checks (scheme, network, asset, payTo, amount, validity window, nonce replay), facilitator `POST /verify`, analysis, facilitator `POST /settle`, then the result with `PAYMENT-RESPONSE`. If settlement fails the result is withheld (402). |
+
+Fail closed: an unknown `BILLING_MODE`, `api_key` without Supabase, or `x402` without both `X402_PAY_TO` and `X402_FACILITATOR_URL` (unless `X402_ACCEPT_STUB=true` for testing) answers **503 `billing_not_configured`** and never runs the engine for free. No pay-to address or facilitator is built in. When billing is on, responses send `X-Billing-Mode`, `X-Price-Usd` and `cache-control: no-store` (no CDN caching of paid results).
+
+MCP: payment headers go on the HTTP POST. An unpaid single `tools/call` returns the gate's HTTP status (402 / 401 / 503) with a JSON-RPC error (`-32002` payment required, `-32001` unauthorized, `-32003` not configured) whose `data` is the 402 body. In x402 mode a batch may contain only one paid `tools/call` (one payment per request).
+
+Going live: set `X402_PAY_TO` to your own Base wallet (public address), `X402_FACILITATOR_URL` to the facilitator you signed up with, `X402_ACCEPT_STUB=false`, then `BILLING_MODE=x402`. Test with one real $0.01 payment before announcing.
+
 ## Environment
 
-See `.env.example`. New in 2.1: `ENABLE_UNISWAP_V4`, `UNISWAP_V4_POOL_KEYS`, `ENABLE_EXTRA_QUOTES`, `DUST_POOL_USD`, `CL_TICK_SCAN_MAX_POOLS`, `CL_TICK_WALK_MAX_TICKS`, `CL_TICK_SCAN_BUDGET_MS`. Use a paid Base RPC for `BASE_RPC_URL` and a logs-capable endpoint for `BASE_LOGS_RPC_URL` in production.
+See `.env.example`. New in 2.2: `BILLING_MODE`, `PRICE_USD`, `X402_*`, `UNISWAP_V4_LOG_DISCOVERY`, `V4_DISCOVERY_*`; Node ≥ 22 (`engines`, Railway `RAILPACK_NODE_VERSION=22`). New in 2.1: `ENABLE_UNISWAP_V4`, `UNISWAP_V4_POOL_KEYS`, `ENABLE_EXTRA_QUOTES`, `DUST_POOL_USD`, `CL_TICK_SCAN_MAX_POOLS`, `CL_TICK_WALK_MAX_TICKS`, `CL_TICK_SCAN_BUDGET_MS`. Use a paid Base RPC for `BASE_RPC_URL` and a logs-capable endpoint for `BASE_LOGS_RPC_URL` in production.
 
 ## Limitations
 
 - **No public mempool on Base.** The front-running score is forensic (what happened to this token's flow in the last hour), not what is queued now.
-- **Uniswap V4 hooked pools are not discoverable** without an index of `Initialize` events (most Base launchpad pools, e.g. Clanker/Zora-style, use hooks). Only hookless pools at the four standard tiers are found automatically; list others in `UNISWAP_V4_POOL_KEYS`. Hook behavior is never modeled and is flagged.
+- **Uniswap V4 hooked pools** (most Base launchpad pools, e.g. Clanker/Zora-style) are found from PoolManager `Initialize` logs only when a logs-capable RPC is configured (`UNISWAP_V4_LOG_DISCOVERY`, bounded to `V4_DISCOVERY_LOOKBACK_BLOCKS` ≈ 11.6 days by default, chunked, time-budgeted, cached per token; never via `mainnet.base.org`). Older pools outside the lookback still need `UNISWAP_V4_POOL_KEYS`. Without logs, only hookless pools at the four standard tiers are found. Hook behavior is never modeled and is flagged.
 - **Other venues** (PancakeSwap, SushiSwap, Balancer, Curve, BaseSwap, …) and intermediates other than USDbC/cbBTC are not scanned.
 - **CL model limits**: see above.
 - **Public RPC limits:** `mainnet.base.org` rejects `eth_getLogs`; logs go to `BASE_LOGS_RPC_URL` / `BASE_RPC_FALLBACK_URLS` (publicnode by default, max 10 addresses per query).

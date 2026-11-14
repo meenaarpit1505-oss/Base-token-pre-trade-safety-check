@@ -153,7 +153,7 @@ Measured against Base mainnet. USDC is not `safe`: Circle can mint, blacklist, a
     "The contract exposes a pause control."
   ],
   "notes": [
-    "LP locked percent was not measured. Concentrated-liquidity positions are NFTs, and Aerodrome gauge stakes are not treated as locked. lpLockedPct is -1."
+    "LP locked percent was not measured. For concentrated liquidity no burned or known-locker position NFT was found in range (other lockers may exist), and Aerodrome gauge stakes are not treated as locked. lpLockedPct is -1."
   ],
   "token": {
     "name": "USD Coin",
@@ -219,7 +219,9 @@ Buy tax is `1 - tokensReceived / quotedBuy`. The quote is `getAmountsOut` (or th
 
 V2/Aerodrome TVL is `quoteReserve × quoteUsd × 2`. Concentrated-liquidity TVL is the sum of both token balances held by the pool, priced from `slot0`. ETH/USD comes from the Uniswap V3 WETH/USDC 0.05% pool. AERO/USD comes from the deepest AERO/USDC oracle pool that holds at least 100 USDC. DAI/USD comes from the deepest Uniswap V3 DAI/USDC pool (0.01% or 0.05%) or the Aerodrome stable DAI/USDC pool, with the same 100 USDC floor. A live read of the 0.01% pool priced DAI at about **$0.997**. USDC and USDbC stay at $1. The main pool is the highest USD value. `0` means none of those venues had liquidity. `-1` means a pool was found but its quote could not be priced.
 
-**lpLockedPct.** For V2-style and Aerodrome LP tokens: `(balance of burn addresses + known lockers) / totalSupply × 100`. Burn addresses are `0x000…000` and `0x000…dEaD`. Lockers are UNCX V2 (`0xc4E6…4131`), UNCX Sushi (`0xBedd…Aae8`), UNCX Aerodrome (`0x30e5…D870`), and PinkLock V2 (`0xdD6E…bBDC`). Aerodrome gauge stakes are not counted; that LP can be withdrawn. Concentrated liquidity is an NFT position, so this field is `-1` and a note says so. Extend the list in `src/domain/addresses.ts`.
+**lpLockedPct.** For V2-style and Aerodrome LP tokens: `(balance of burn addresses + known lockers) / totalSupply × 100`. Burn addresses are `0x000…000` and `0x000…dEaD`. Lockers are UNCX V2 (`0xc4E6…4131`), UNCX Sushi (`0xBedd…Aae8`), UNCX Aerodrome (`0x30e5…D870`), and PinkLock V2 (`0xdD6E…bBDC`). Aerodrome gauge stakes are not counted; that LP can be withdrawn. Extend the list in `src/domain/addresses.ts`.
+
+**lpLockedPct for concentrated liquidity (Uniswap V3, PancakeSwap V3, Aerodrome Slipstream).** CL liquidity is held in position NFTs. `src/services/lpLocks.ts` indexes the NFTs owned by `0x000…dEaD` (plus any operator-verified addresses in `LP_NFT_LOCKERS`) on each position manager (Uniswap V3 `0x03a5…34f1` and Pancake V3 `0x46A1…4364`, both verified on-chain via `factory()`; Slipstream managers are read per pool from `CLPool.nft()`). The value is the in-range liquidity of those positions divided by the pool's active `liquidity()`. It is a **lower bound**: positions in other lockers are not counted, so a CL value never raises `unlocked_lp`; an info note (`lp_lock_floor`) says "At least X%". When nothing burned or locked is found (or the index is still building) the field stays `-1`. The index is built in the background at startup (`LP_NFT_INDEX_WARM`, ~40 multicalls, ~8 s on a public RPC) and refreshed every `LP_NFT_INDEX_REFRESH_MS`; requests never wait for it unless `LP_NFT_INDEX_BUDGET_MS` > 0.
 
 **ownerCanMint.** Runtime bytecode of the token and, when it is a proxy, of its implementation is scanned for the Solidity dispatcher pattern `PUSH4 <selector>`. Selectors cover `mint(address,uint256)`, `mint(uint256)`, `mintTo`, and `ownerMint`. Proxies are followed through `implementation()`, the FiatToken/ZeppelinOS slot (Base USDC), EIP-1967, and EIP-1167. `owner()` is called on-chain. The flag is true when a mint selector exists and the owner is not the zero or dead address. If there is no `owner()` and a mint selector exists, the flag is still true. If ownership is renounced and a mint selector still exists, the service `eth_call`s `mint`, `mintTo`, and `ownerMint` from an unrelated EOA. A call that does not revert sets the flag and says the mint is public. A verified ABI from Sourcify, or from Etherscan when `ETHERSCAN_API_KEY` is set, is OR-ed in so a mint that the bytecode scan missed is still caught. The same pass sets blacklist, pause, and tax-setter flags. `paused()` is called when a pause selector exists; a live pause is `danger`.
 
@@ -326,7 +328,7 @@ npm run compile:simulator
 - The harness is a contract. Tokens that refuse to sell to contracts can be flagged even if an EOA could sell. Trading agents are usually contracts, so that failure is reported.
 - Tax under 0.5% is reported as zero.
 - Only WETH, USDC, USDbC, DAI, and AERO quote pairs on the DEXes listed above are searched. A token that only trades against something else looks illiquid.
-- V3 / Slipstream LP locks are not measured. The locker list is not exhaustive. Team Finance's Base vault is not hardcoded because the public docs do not pin one address.
+- V3 / Slipstream LP locks are measured only for burned (`0x…dEaD`) positions and `LP_NFT_LOCKERS`, as a lower bound. The locker list is not exhaustive. Team Finance's Base vault is not hardcoded because the public docs do not pin one address.
 - LP burned with `_burn` (supply reduced, dead balance unchanged) is not visible. Only tokens sitting on the dead address or a known locker are counted.
 - A renounced owner plus a public `mint` is probed with `eth_call`. A payable mint, a mint that needs a signature, or a mint the selector scan missed can still be reported as `ownerCanMint: false`.
 - Selector scan looks for `PUSH4 selector`. A via-IR dispatcher that never emits that pattern can be missed; the verified ABI covers that when Sourcify or Etherscan has the source.

@@ -13,6 +13,12 @@ import {
 import { humanAmount, priceToken0InToken1, roundPct, roundUsd } from "../domain/math.js";
 import type { DexId, PoolKind } from "../types.js";
 import { aggregate, decodeString, decodeWord, type BaseClient } from "./rpc.js";
+import { clLockFloors, PANCAKE_V3_NPM, UNI_V3_NPM, type ClPoolLockInput } from "./lpLocks.js";
+
+const clPoolExtraAbi = [
+  { type: "function", name: "liquidity", stateMutability: "view", inputs: [], outputs: [{ type: "uint128" }] },
+  { type: "function", name: "nft", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+] as const;
 
 const AERO_FACTORY = getAddress("0x420DD381b31aEf6683db6B902084cB0FFECe40Da");
 const AERO_ROUTER = getAddress("0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43");
@@ -163,6 +169,8 @@ export interface PricedPool {
   quoteBalance: bigint;
   liquidityUsd: number | null;
   lpLockedPct: number | null;
+  /** True when lpLockedPct is a lower bound (CL position NFTs: burned or known-locker positions only). */
+  lpLockFloor: boolean;
 }
 
 export interface Market {
@@ -458,16 +466,36 @@ interface PoolState {
   tokenBalance: bigint;
   totalSupply: bigint;
   locked: bigint;
+  tick: number | null;
+  activeLiquidity: bigint;
+  npm: Address | null;
+  clLockedPct: number | null;
+}
+
+function signedWord(data: Hex, wordIndex: number): number | null {
+  const start = 2 + wordIndex * 64;
+  if (!data || data.length < start + 64) return null;
+  let value = BigInt(`0x${data.slice(start, start + 64)}`);
+  if (value >= 1n << 255n) value -= 1n << 256n;
+  return Number(value);
 }
 
 async function readPoolState(client: BaseClient, token: Address, _decimals: number, pools: FoundPool[]): Promise<PoolState[]> {
   if (pools.length === 0) return [];
   const calls: { target: Address; data: Hex }[] = [];
-  const layout: { pool: number; field: "reserves" | "slot0" | "quote" | "token" | "supply" | "lock" }[] = [];
+  const layout: { pool: number; field: "reserves" | "slot0" | "quote" | "token" | "supply" | "lock" | "liquidity" | "nft" }[] = [];
   pools.forEach((pool, poolIndex) => {
     if (pool.kind === "cl") {
       calls.push(call(pool.address, encodeFunctionData({ abi: slot0Abi, functionName: "slot0" })));
       layout.push({ pool: poolIndex, field: "slot0" });
+      if (!pool.oracle) {
+        calls.push(call(pool.address, encodeFunctionData({ abi: clPoolExtraAbi, functionName: "liquidity" })));
+        layout.push({ pool: poolIndex, field: "liquidity" });
+        if (pool.dex === "aerodrome-slipstream") {
+          calls.push(call(pool.address, encodeFunctionData({ abi: clPoolExtraAbi, functionName: "nft" })));
+          layout.push({ pool: poolIndex, field: "nft" });
+        }
+      }
     } else {
       calls.push(call(pool.address, encodeFunctionData({ abi: reservesAbi, functionName: "getReserves" })));
       layout.push({ pool: poolIndex, field: "reserves" });
@@ -498,6 +526,10 @@ async function readPoolState(client: BaseClient, token: Address, _decimals: numb
     tokenBalance: 0n,
     totalSupply: 0n,
     locked: 0n,
+    tick: null,
+    activeLiquidity: 0n,
+    npm: candidate.dex === "uniswap-v3" ? UNI_V3_NPM : candidate.dex === "pancakeswap-v3" ? PANCAKE_V3_NPM : null,
+    clLockedPct: null,
   }));
   rows.forEach((row, index) => {
     const meta = layout[index];
@@ -515,6 +547,13 @@ async function readPoolState(client: BaseClient, token: Address, _decimals: numb
     } else if (meta.field === "slot0") {
       const sqrt = decodeWord(row.returnData, "uint160");
       if (typeof sqrt === "bigint") state.sqrtPriceX96 = sqrt;
+      state.tick = signedWord(row.returnData, 1);
+    } else if (meta.field === "liquidity") {
+      const liquidity = decodeWord(row.returnData, "uint256");
+      if (typeof liquidity === "bigint") state.activeLiquidity = liquidity;
+    } else if (meta.field === "nft") {
+      const npm = decodeWord(row.returnData, "address");
+      if (typeof npm === "string" && !sameAddress(npm, ZERO)) state.npm = getAddress(npm);
     } else if (meta.field === "quote" || meta.field === "token" || meta.field === "supply" || meta.field === "lock") {
       const amount = decodeWord(row.returnData, "uint256");
       if (typeof amount !== "bigint") return;
@@ -524,7 +563,41 @@ async function readPoolState(client: BaseClient, token: Address, _decimals: numb
       if (meta.field === "lock") state.locked += amount;
     }
   });
+  await attachClLockFloors(client, token, states);
   return states;
+}
+
+async function attachClLockFloors(client: BaseClient, token: Address, states: PoolState[]): Promise<void> {
+  const targets: { state: PoolState; input: ClPoolLockInput }[] = [];
+  for (const state of states) {
+    const candidate = state.candidate;
+    if (candidate.kind !== "cl" || candidate.oracle || !state.npm || state.tick === null || state.activeLiquidity <= 0n) continue;
+    const feeOrSpacing =
+      candidate.dex === "aerodrome-slipstream" ? candidate.tickSpacing : candidate.feeBps !== null ? Math.round(candidate.feeBps * 100) : null;
+    if (feeOrSpacing === null) continue;
+    const quoteFirst = candidate.quote.address.toLowerCase() < token.toLowerCase();
+    targets.push({
+      state,
+      input: {
+        npm: state.npm,
+        token0: quoteFirst ? candidate.quote.address : token,
+        token1: quoteFirst ? token : candidate.quote.address,
+        feeOrSpacing,
+        tick: state.tick,
+        liquidity: state.activeLiquidity,
+      },
+    });
+  }
+  if (targets.length === 0) return;
+  try {
+    const floors = await clLockFloors(client, targets.map((target) => target.input));
+    floors.forEach((pct, index) => {
+      const target = targets[index];
+      if (target) target.state.clLockedPct = pct;
+    });
+  } catch {
+    /* unknown stays null */
+  }
 }
 
 function decodeReserves(data: Hex): [bigint, bigint] {
@@ -594,9 +667,11 @@ function toPriced(state: PoolState, token: Address, tokenDecimals: number, quote
     }
   }
   const lpLockedPct =
-    state.candidate.kind === "cl" || state.totalSupply <= 0n
-      ? null
-      : roundPct(Number((state.locked * 10_000n) / state.totalSupply) / 100);
+    state.candidate.kind === "cl"
+      ? state.clLockedPct
+      : state.totalSupply <= 0n
+        ? null
+        : roundPct(Number((state.locked * 10_000n) / state.totalSupply) / 100);
 
   return {
     address: state.candidate.address,
@@ -611,6 +686,7 @@ function toPriced(state: PoolState, token: Address, tokenDecimals: number, quote
     quoteBalance,
     liquidityUsd,
     lpLockedPct,
+    lpLockFloor: state.candidate.kind === "cl" && lpLockedPct !== null,
   };
 }
 

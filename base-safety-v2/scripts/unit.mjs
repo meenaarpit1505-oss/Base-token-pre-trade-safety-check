@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import { encodeAbiParameters, encodeEventTopics, keccak256, toHex } from 'viem';
-import { _models, loadConfig, parseV4PoolKeys, v4PoolId, analyzeTokenSafety, THRESHOLDS, ADDRESSES } from '../lib/safetyEngine.js';
+import { _models, loadConfig, parseV4PoolKeys, v4PoolId, analyzeTokenSafety, THRESHOLDS, ADDRESSES, decodeV4InitializeLogs, v4LogDiscoveryUrls } from '../lib/safetyEngine.js';
 import * as cl from '../lib/clMath.js';
 
 let passed = 0;
@@ -256,6 +256,121 @@ const cpPool = ({ address, quote, depthUsd, dex = 'uniswap_v2' }) => ({ address,
   const bad = await analyzeTokenSafety('not-an-address');
   assert(validate(bad), 'invalid-address result is schema-valid: ' + ajv.errorsText(validate.errors));
   assert(bad.status === 'DANGER' && bad.recommendation.reasons.length === 1, 'invalid address => DANGER with reason');
+}
+
+
+// ---------------------------------------------------------------------------
+// 7. Payment gate (lib/billing.js): open / api_key / x402, fail-closed config. No network.
+// ---------------------------------------------------------------------------
+{
+  const B = await import('../lib/billing.js');
+  const reqWith = (headers = {}) => new Request('https://svc.test/api/analyze', { method: 'POST', headers });
+  const open = await B.authorizeCall(reqWith(), { cfg: B.loadBillingConfig({}) });
+  assert(open.ok && open.identity === 'anonymous' && Object.keys(open.headers).length === 0, 'billing: default mode open, no headers');
+  const bogus = await B.authorizeCall(reqWith(), { cfg: B.loadBillingConfig({ BILLING_MODE: 'free' }) });
+  assert(!bogus.ok && bogus.status === 503, 'billing: unknown mode fails closed (503)');
+  const noSb = await B.authorizeCall(reqWith({ 'x-api-key': 'k' }), { cfg: B.loadBillingConfig({ BILLING_MODE: 'api_key' }) });
+  assert(!noSb.ok && noSb.status === 503 && noSb.body.error === 'billing_not_configured', 'billing: api_key without Supabase fails closed');
+
+  const akCfg = B.loadBillingConfig({ BILLING_MODE: 'api_key', SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'test' });
+  const calls = [];
+  const rpcYes = async (fn, args) => (calls.push([fn, args]), { data: true, error: null });
+  const rpcNo = async () => ({ data: false, error: null });
+  const rpcErr = async () => ({ data: null, error: { message: 'boom' } });
+  assert((await B.authorizeCall(reqWith(), { cfg: akCfg, rpc: rpcYes })).status === 401, 'billing: api_key missing header => 401');
+  const akOk = await B.authorizeCall(reqWith({ 'x-api-key': 'secret-key-123' }), { cfg: akCfg, rpc: rpcYes });
+  assert(akOk.ok && calls.length === 1 && calls[0][0] === 'deduct_api_key_balance' && calls[0][1].p_key === 'secret-key-123' && calls[0][1].p_cost === '0.01', 'billing: api_key deducts $0.01 via RPC');
+  assert(!akOk.identity.includes('secret-key-123') && akOk.headers['x-price-usd'] === '0.01', 'billing: identity does not echo the key; price header');
+  assert((await B.authorizeCall(reqWith({ 'x-api-key': 'k' }), { cfg: akCfg, rpc: rpcNo })).status === 402, 'billing: api_key empty balance => 402');
+  assert((await B.authorizeCall(reqWith({ 'x-api-key': 'k' }), { cfg: akCfg, rpc: rpcErr })).status === 402, 'billing: api_key RPC error fails closed');
+  assert((await B.authorizeCall(reqWith({ 'x-api-key': 'k' }), { cfg: akCfg, rpc: null })).status === 503, 'billing: api_key no client => 503');
+
+  // x402 config validation
+  assert(B.loadBillingConfig({ BILLING_MODE: 'x402' }).errors.length > 0, 'billing: x402 without pay-to/facilitator is misconfigured');
+  assert(B.loadBillingConfig({ BILLING_MODE: 'x402', X402_PAY_TO: '0x0000000000000000000000000000000000000000', X402_FACILITATOR_URL: 'https://f.test' }).errors.some((e) => e.includes('zero')), 'billing: zero pay-to rejected');
+  assert(B.loadBillingConfig({ BILLING_MODE: 'x402', X402_PAY_TO: '0x' + '1'.repeat(40), X402_FACILITATOR_URL: 'http://f.test' }).errors.some((e) => e.includes('https')), 'billing: non-https facilitator rejected');
+  assert(B.loadBillingConfig({ BILLING_MODE: 'x402', PRICE_USD: '0', X402_ACCEPT_STUB: 'true' }).errors.length > 0, 'billing: zero price rejected');
+
+  // x402 stub-only (testing)
+  const stubCfg = B.loadBillingConfig({ BILLING_MODE: 'x402', X402_ACCEPT_STUB: 'true' });
+  assert(stubCfg.errors.length === 0, 'billing: stub-only x402 config is valid');
+  const unpaid = await B.authorizeCall(reqWith(), { cfg: stubCfg });
+  assert(!unpaid.ok && unpaid.status === 402 && unpaid.headers['payment-required'], 'billing: x402 unpaid => 402 + PAYMENT-REQUIRED');
+  const doc = JSON.parse(atob(unpaid.headers['payment-required']));
+  assert(doc.x402Version === 2 && Array.isArray(doc.accepts) && doc.accepts.length === 0, 'billing: no pay-to => no invented accepts');
+  assert((await B.authorizeCall(reqWith({ 'x-payment': 'stub:agent-1' }), { cfg: stubCfg })).ok, 'billing: stub accepted when X402_ACCEPT_STUB=true');
+  const stubOff = B.loadBillingConfig({ BILLING_MODE: 'x402', X402_PAY_TO: '0x' + '1'.repeat(40), X402_FACILITATOR_URL: 'https://f.test' });
+  assert(!(await B.authorizeCall(reqWith({ 'x-payment': 'stub:agent-1' }), { cfg: stubOff })).ok, 'billing: stub rejected by default');
+
+  // x402 full path with a fake facilitator (test-only addresses)
+  const PAY_TO = '0x' + '1'.repeat(40);
+  const PAYER = '0x' + '2'.repeat(40);
+  const xCfg = B.loadBillingConfig({ BILLING_MODE: 'x402', X402_PAY_TO: PAY_TO, X402_FACILITATOR_URL: 'https://facilitator.test/x402' });
+  assert(xCfg.errors.length === 0 && xCfg.amount === '10000', 'billing: x402 config, $0.01 = 10000 atomic USDC');
+  const reqs = B.paymentRequirements(xCfg);
+  assert(reqs.asset === B.BASE_USDC && reqs.network === 'eip155:8453' && reqs.extra.name === 'USD Coin' && reqs.extra.version === '2', 'billing: USDC-on-Base requirements');
+  const now = 1_800_000_000;
+  const mkPay = (over = {}, nonce = '0x' + 'a'.repeat(64)) => B.encodePaymentHeader({
+    x402Version: 2,
+    accepted: { ...reqs, ...over },
+    payload: { signature: '0x' + 'b'.repeat(130), authorization: { from: PAYER, to: PAY_TO, value: over.amount ?? '10000', validAfter: String(now - 10), validBefore: String(now + 50), nonce } },
+  });
+  const hits = [];
+  const fac = (settleOk = true) => async (url, init) => {
+    hits.push(url);
+    const isVerify = url.endsWith('/verify');
+    const body = isVerify ? { isValid: true, payer: PAYER } : settleOk ? { success: true, payer: PAYER, transaction: '0x' + 'c'.repeat(64), network: 'eip155:8453' } : { success: false, errorReason: 'insufficient_funds' };
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  B.resetNoncesForTests();
+  const g = await B.authorizeCall(reqWith({ 'payment-signature': mkPay() }), { cfg: xCfg, fetch: fac(), now });
+  assert(g.ok && g.identity === 'x402:' + PAYER.toLowerCase() && hits[0] === 'https://facilitator.test/x402/verify', 'billing: x402 verify via facilitator');
+  const fin = await g.finalize({ success: true });
+  assert(fin.ok && hits[1] === 'https://facilitator.test/x402/settle' && JSON.parse(atob(fin.headers['payment-response'])).success === true, 'billing: x402 settle + PAYMENT-RESPONSE');
+  const replay = await B.authorizeCall(reqWith({ 'payment-signature': mkPay() }), { cfg: xCfg, fetch: fac(), now });
+  assert(!replay.ok && replay.status === 402 && replay.body.message.includes('nonce'), 'billing: nonce replay rejected');
+  const wrongAmt = await B.authorizeCall(reqWith({ 'payment-signature': mkPay({ amount: '1' }, '0x' + 'd'.repeat(64)) }), { cfg: xCfg, fetch: fac(), now });
+  assert(!wrongAmt.ok && wrongAmt.status === 402, 'billing: wrong amount rejected');
+  const wrongTo = await B.authorizeCall(reqWith({ 'payment-signature': mkPay({ payTo: PAYER }, '0x' + 'e'.repeat(64)) }), { cfg: xCfg, fetch: fac(), now });
+  assert(!wrongTo.ok && wrongTo.body.message.includes('X402_PAY_TO'), 'billing: wrong recipient rejected');
+  const g2 = await B.authorizeCall(reqWith({ 'payment-signature': mkPay({}, '0x' + 'f'.repeat(64)) }), { cfg: xCfg, fetch: fac(false), now });
+  const fin2 = await g2.finalize({ success: true });
+  assert(g2.ok && !fin2.ok && fin2.status === 402, 'billing: failed settlement withholds the result');
+  const g3 = await B.authorizeCall(reqWith({ 'payment-signature': mkPay({}, '0x' + 'f'.repeat(64)) }), { cfg: xCfg, fetch: fac(), now });
+  assert(g3.ok, 'billing: nonce released after failed settlement');
+  const garbage = await B.authorizeCall(reqWith({ 'payment-signature': 'not-base64!!' }), { cfg: xCfg, fetch: fac(), now });
+  assert(!garbage.ok && garbage.status === 402, 'billing: malformed payment => 402');
+}
+
+// ---------------------------------------------------------------------------
+// 8. Uniswap V4 Initialize-log discovery (gating + decoding). No network.
+// ---------------------------------------------------------------------------
+{
+  assert(v4LogDiscoveryUrls('auto', 'https://mainnet.base.org', [], ['https://base-rpc.publicnode.com']) === null, 'v4 logs: auto + default RPCs => disabled');
+  assert(v4LogDiscoveryUrls('auto', 'https://base-mainnet.g.alchemy.com/v2/x', [], [])?.[0]?.includes('alchemy'), 'v4 logs: auto + custom BASE_RPC_URL => enabled');
+  assert(v4LogDiscoveryUrls('auto', 'https://mainnet.base.org', ['https://logs.example'], [])?.length === 1, 'v4 logs: auto + BASE_LOGS_RPC_URL => enabled');
+  assert(v4LogDiscoveryUrls('on', 'https://mainnet.base.org', [], ['https://base-rpc.publicnode.com', 'https://mainnet.base.org'])?.join() === 'https://base-rpc.publicnode.com', 'v4 logs: on uses fallbacks, never mainnet.base.org');
+  assert(v4LogDiscoveryUrls('off', 'https://x.example', ['https://y.example'], []) === null, 'v4 logs: off');
+
+  const TOKEN = '0x' + '7'.repeat(40);
+  const HOOK = '0x' + '8'.repeat(39) + 'c';
+  const mk = (c0, c1, fee, ts, hooks, idOverride) => {
+    const key = { currency0: c0, currency1: c1, fee, tickSpacing: ts, hooks };
+    const ev = _models.EV.V4_INITIALIZE;
+    const topics = encodeEventTopics({ abi: [ev], eventName: 'Initialize', args: { id: idOverride ?? v4PoolId(key), currency0: c0, currency1: c1 } });
+    const data = encodeAbiParameters([{ type: 'uint24' }, { type: 'int24' }, { type: 'address' }, { type: 'uint160' }, { type: 'int24' }], [fee, ts, hooks, 2n ** 96n, 0]);
+    return { topics, data, blockNumber: '0x10' };
+  };
+  const ETH = '0x0000000000000000000000000000000000000000';
+  const USDC = ASSET.USDC.address;
+  const found = decodeV4InitializeLogs([
+    mk(ETH, TOKEN, 12345, 77, HOOK), // hooked ETH pool, custom tier
+    mk(TOKEN, USDC, 3000, 60, ETH), // hookless USDC
+    mk(TOKEN, '0x' + '9'.repeat(40), 3000, 60, ETH), // unsupported quote => ignored
+    mk(ETH, TOKEN, 500, 10, HOOK, '0x' + '0'.repeat(63) + '1'), // id does not match key => ignored
+    { topics: ['0x' + '1'.repeat(64)], data: '0x' }, // garbage
+  ], TOKEN);
+  assert(found.length === 2 && found[0].hooks === HOOK && found[0].fee === 12345 && found[0].tickSpacing === 77 && found[0].block === 16, 'v4 logs: decode hooked Initialize, drop unknown quotes / bad ids');
 }
 
 console.log(`UNIT PASSED (${passed} assertions)`);

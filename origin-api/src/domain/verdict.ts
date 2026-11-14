@@ -28,8 +28,10 @@ export interface Signals {
   hasPause: boolean;
   isPaused: boolean;
   hasTaxSetter: boolean;
-  /** null when the pool is concentrated liquidity or lock balances could not be read. */
+  /** null when lock balances could not be read, or (concentrated liquidity) no burned / known-locker position was found. */
   lpLockedPct: number | null;
+  /** True when lpLockedPct is a lower bound from CL position NFTs (burned or known lockers only). */
+  lpLockFloor?: boolean;
   /** null when the quote asset could not be priced. */
   liquidityUsd: number | null;
   noPool: boolean;
@@ -169,6 +171,7 @@ export function flagsFromSignals(signals: Signals): Flag[] {
 
   if (
     signals.lpLockedPct !== null &&
+    !signals.lpLockFloor &&
     signals.liquidityUsd !== null &&
     signals.lpLockedPct < THRESHOLDS.lpUnlockCautionPct &&
     signals.liquidityUsd < THRESHOLDS.lpUnlockLiquidityMaxUsd
@@ -193,7 +196,14 @@ export function flagsFromSignals(signals: Signals): Flag[] {
       severity: "info",
       code: "lp_lock_unmeasured",
       message:
-        "LP locked percent was not measured. Concentrated-liquidity positions are NFTs, and Aerodrome gauge stakes are not treated as locked. lpLockedPct is -1.",
+        "LP locked percent was not measured. For concentrated liquidity no burned or known-locker position NFT was found in range (other lockers may exist), and Aerodrome gauge stakes are not treated as locked. lpLockedPct is -1.",
+    });
+  }
+  if (!signals.noPool && signals.lpLockedPct !== null && signals.lpLockFloor) {
+    flags.push({
+      severity: "info",
+      code: "lp_lock_floor",
+      message: `At least ${signals.lpLockedPct}% of the pool's in-range liquidity sits in burned or known-locker position NFTs. Positions held elsewhere are not counted.`,
     });
   }
   if (!signals.noPool && signals.liquidityUsd === null) {

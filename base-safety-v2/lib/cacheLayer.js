@@ -49,7 +49,7 @@ export function getSupabase() {
   }
   supabase = createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    global: { headers: { 'x-client-info': 'base-token-safety/2.1' } },
+    global: { headers: { 'x-client-info': 'base-token-safety/2.2' } },
   });
   return supabase;
 }

@@ -3,6 +3,7 @@ import { app } from "./app.js";
 import { getConfig } from "./config.js";
 import { getUsageStore } from "./http/usageStore.js";
 import { getBaseClient } from "./services/rpc.js";
+import { warmLpLockIndex } from "./services/lpLocks.js";
 
 export default app;
 
@@ -31,6 +32,18 @@ if (process.env.VERCEL !== "1") {
         message: error instanceof Error ? error.message.slice(0, 300) : "unknown",
       }),
     );
+  }
+
+  // Background: index burned / known-locker CL position NFTs so lpLockedPct can be measured for V3 pools.
+  if ((process.env.LP_NFT_INDEX_WARM ?? "true").toLowerCase() !== "false") {
+    getBaseClient()
+      .then((client) => warmLpLockIndex(client))
+      .then((result) => console.log(JSON.stringify({ event: "lp_lock_index_ready", ...result })))
+      .catch((error) =>
+        console.error(
+          JSON.stringify({ event: "lp_lock_index_failed", message: error instanceof Error ? error.message.slice(0, 300) : "unknown" }),
+        ),
+      );
   }
 
   serve({ fetch: app.fetch, hostname: "0.0.0.0", port: config.port }, (info) => {
